@@ -182,7 +182,7 @@ def render_history(page=1):
             Thead(Tr(Th("ID"), Th("Prompt"), Th("Model"), Th("Status"), Th("Turns"), Th("Tokens/Cost"), Th("Created At"))),
             Tbody(
                 *[Tr(
-                    Td(A(str(exec["id"]), hx_get=f"/execution/{exec['id']}", hx_target="#modal-placeholder")),
+                    Td(A(str(exec["id"]), hx_get=f"/conversation/{exec['id']}", hx_target="#modal-placeholder")),
                     Td(exec["prompt"][:50] + ("..." if len(exec["prompt"]) > 50 else "")),
                     Td(exec["model"]),
                     Td(exec["status"], cls=f"status-{exec['status']}"),
@@ -259,7 +259,10 @@ app, rt = fast_app(
             .htmx-request.button-execute, .is-loading.button-execute { pointer-events: none; opacity: 0.8; }
             .spinner { display: inline-block; width: 1.2rem; height: 1.2rem; border: 2px solid rgba(255,255,255,.3); border-radius: 50%; border-top-color: #fff; animation: spin 0.8s linear infinite; margin-right: 0.5rem; }
             @keyframes spin { to { transform: rotate(360deg); } }
+            .button-execute { width: 150px !important; display: inline-block !important; margin-right: 1rem !important; }
             #execution-modal article { width: 90%; max-width: 1200px; }
+            .conversation-link { display: inline-block; vertical-align: middle; }
+            #conversation-modal article { width: 70%; height: 90vh; max-width: none; }
             .pagination-container { display: flex; align-items: center; justify-content: center; margin-top: 1rem; gap: 1rem; }
             .pagination-container button { margin-bottom: 0; }
             .followup-box { background: #f4f4f4; padding: 1rem; border-radius: 8px; margin-top: 1rem; border: 1px solid #ccc; }
@@ -268,24 +271,56 @@ app, rt = fast_app(
 )
 
 @rt("/")
-def get(session):
+def get_index(session):
+    models = [
+        "gemini/gemini-3-flash-preview",
+        "gemini/gemini-2.0-flash-exp",
+        "openai/gpt-4o",
+        "openai/gpt-4o-mini",
+        "anthropic/claude-3-5-sonnet-20240620"
+    ]
     return Titled("Task Runner",
         Div(
+            A("Logout", href="/logout", style="float: right"),
             Form(
                 H3("Execute Task"),
-                A("Logout", href="/logout", style="float: right"),
+                Grid(
+                    Div(
+                        Label("Model:", fr="model"),
+                        Select(
+                            *[Option(m, value=m) for m in models],
+                            name="model", id="model", required=True
+                        ),
+                    ),
+                    Div(
+                        Label("Working Directory:", fr="workspace"),
+                        Input(type="text", name="workspace", id="workspace", required=True, value="."),
+                    ),
+                ),
                 Label("Prompt:", fr="prompt"),
-                Textarea(name="prompt", id="prompt", rows=4, required=True),
-                Label("Model:", fr="model"),
-                Input(type="text", name="model", id="model", required=True, value="gemini/gemini-3-flash-preview"),
-                Label("Working Directory:", fr="workspace"),
-                Input(type="text", name="workspace", id="workspace", required=True, value="."),
+                Textarea(name="prompt", id="prompt", rows=4, required=True, 
+                         oninput="const btn = document.querySelector('.button-execute'); if(this.value.trim()){ btn.disabled = false; } else { btn.disabled = true; }"),
                 Button(
                     Div(Span(cls="spinner"), "Execute", cls="loading-indicator"),
                     Span("Execute", cls="normal-text"),
-                    type="submit", hx_post="/execute", hx_target="#executions-container", cls="button-execute"
+                    type="submit", hx_post="/execute", hx_target="#loading-indicator", hx_swap="none", cls="button-execute", disabled=True
                 ),
-                id="task-form"
+                A("Conversation", id="conversation-link", cls="conversation-link", href="#", 
+                  hx_get="/conversation", hx_target="#modal-placeholder", 
+                  hx_trigger="click",
+                  onclick="const execId = document.getElementById('task-form').dataset.activeExecId; if(!execId) { alert('No active execution'); return false; } this.setAttribute('hx-get', '/conversation/' + execId); htmx.process(this);",
+                  style="display:none"),
+                id="task-form",
+                hx_on__after_request="""
+                    if(event.detail.successful) { 
+                        const execId = event.detail.xhr.responseText.match(/execution-(\d+)/)?.[1];
+                        if(execId) {
+                            this.dataset.activeExecId = execId;
+                            const convLink = document.getElementById('conversation-link');
+                            convLink.style.display = 'inline-block';
+                        }
+                    }
+                """
             ),
             Div(Span("Loading...", cls="loading-indicator"), id="loading-indicator"),
             Div(id="executions-container"),
@@ -295,16 +330,25 @@ def get(session):
     )
 
 @rt("/history")
-def get(page: int = 1):
+def get_history(page: int = 1):
     return render_history(page)
 
 @rt("/execute")
-async def post(request):
+async def post_execute(request):
     form = await request.form()
     prompt = form.get("prompt", "").strip()
     model = form.get("model", "").strip()
     workspace = form.get("workspace", "").strip()
+    exec_id_active = form.get("exec_id", "").strip()
     
+    if exec_id_active and exec_id_active.isdigit():
+        exec_id = int(exec_id_active)
+        if prompt and exec_id in execution_inputs:
+            execution_inputs[exec_id].put(prompt)
+        # Return nothing to avoid replacing the terminal container, 
+        # but the client-side Script in the initial /execute call handles state
+        return ""
+
     if not prompt or not model or not workspace:
         return Div("Prompt, model, and workspace are required", cls="error")
     
@@ -348,7 +392,7 @@ async def post(request):
                 writer.clear_logs()
                 
                 update_execution_status(exec_id, "waiting_for_input")
-                sys.stdout.write("\n[System: Gõ lệnh tiếp theo vào ô chat bên dưới, hoặc ấn Đóng Phiên]\n")
+                sys.stdout.write("\n[System: Gõ lệnh tiếp theo]\n")
                 
                 msg = in_q.get(block=True)
                 if msg == "__STOP__":
@@ -382,23 +426,15 @@ async def post(request):
     return Div(
         H4(f"Execution #{exec_id} started"),
         Div(id=f"terminal-output-{exec_id}", cls="terminal"),
-        Div(
-            Form(
-                Textarea(name="prompt", id=f"followup-input-{exec_id}", placeholder="Gõ yêu cầu tiếp theo...", rows=2, required=True, disabled=True),
-                Div(
-                    Button("Gửi lệnh", type="submit", cls="outline followup-btn", disabled=True),
-                    Button("Đóng Phiên", type="button", hx_post=f"/execute/{exec_id}/stop", hx_swap="none", cls="outline secondary followup-btn", disabled=True),
-                    style="display: flex; gap: 10px; margin-top: 10px;"
-                ),
-                hx_post=f"/execute/{exec_id}/message", hx_swap="none", id=f"followup-form-{exec_id}"
-            ),
-            cls="followup-box", id=f"followup-container-{exec_id}"
-        ),
         Script(f"""
             (function() {{
                 const term = document.getElementById('terminal-output-{exec_id}');
                 const btn = document.querySelector('.button-execute');
+                const promptArea = document.getElementById('prompt');
+                const taskForm = document.getElementById('task-form');
+                
                 if (btn) {{ btn.classList.add('is-loading'); btn.disabled = true; }}
+                
                 const source = new EventSource('/stream/{exec_id}');
                 source.onmessage = function(event) {{
                     const data = event.data;
@@ -406,45 +442,63 @@ async def post(request):
                     term.scrollTop = term.scrollHeight;
                     
                     if (data.includes('[System: Gõ lệnh tiếp theo')) {{
-                        const fup = document.getElementById('followup-container-{exec_id}');
-                        if (fup) {{
-                            fup.querySelectorAll('button.followup-btn, textarea').forEach(el => el.disabled = false);
+                        if (btn) {{ 
+                            btn.classList.remove('is-loading'); 
+                            btn.disabled = true; // Always disable first because we clear prompt
+                        }}
+                        if (promptArea) {{
+                            promptArea.value = '';
+                            promptArea.placeholder = 'Gõ yêu cầu tiếp theo...';
+                            // Add hidden input for exec_id if not exists
+                            let inputExec = taskForm.querySelector('input[name="exec_id"]');
+                            if(!inputExec) {{
+                                inputExec = document.createElement('input');
+                                inputExec.type = 'hidden';
+                                inputExec.name = 'exec_id';
+                                inputExec.value = '{exec_id}';
+                                taskForm.appendChild(inputExec);
+                            }}
                         }}
                     }}
                     else if (data.includes('> User:')) {{
-                        const fup = document.getElementById('followup-container-{exec_id}');
-                        if (fup) {{
-                            fup.querySelectorAll('button.followup-btn, textarea').forEach(el => el.disabled = true);
-                        }}
+                        if (btn) {{ btn.classList.add('is-loading'); btn.disabled = true; }}
                     }}
                 }};
                 source.onerror = function(event) {{
                     source.close();
-                    if (btn) {{ btn.classList.remove('is-loading'); btn.disabled = false; }}
-                    const fup = document.getElementById('followup-container-{exec_id}');
-                    if(fup) fup.style.display = 'none';
+                    if (btn) {{ 
+                        btn.classList.remove('is-loading'); 
+                        if(promptArea && promptArea.value.trim()) btn.disabled = false; else if(btn) btn.disabled = true;
+                    }}
+                    // Remove hidden input when finished
+                    if(taskForm) {{
+                        let inputExec = taskForm.querySelector('input[name="exec_id"]');
+                        if(inputExec) inputExec.remove();
+                    }}
+                    if(promptArea) promptArea.placeholder = '';
                 }};
             }})();
         """),
-        id=f"execution-{exec_id}"
+        id=f"execution-{exec_id}",
+        hx_swap_oob="afterbegin:#executions-container"
     )
 
 @rt("/execute/{exec_id}/message")
-async def post(exec_id: int, request):
+async def post_message(exec_id: int, request):
     form = await request.form()
     prompt = form.get("prompt", "").strip()
     if prompt and exec_id in execution_inputs:
         execution_inputs[exec_id].put(prompt)
-    return Script(f"document.getElementById('followup-input-{exec_id}').value = '';")
+    return ""
 
 @rt("/execute/{exec_id}/stop")
-def post(exec_id: int):
+def post_stop(exec_id: int):
     if exec_id in execution_inputs:
         execution_inputs[exec_id].put("__STOP__")
-    return Script(f"document.getElementById('followup-container-{exec_id}').style.display = 'none';")
+    return ""
 
 @rt("/stream/{exec_id}")
-async def get(exec_id: int):
+async def get_stream(exec_id: int):
     async def event_stream():
         q = execution_queues.get(exec_id)
         if q is None: return
@@ -462,6 +516,54 @@ async def get(exec_id: int):
                 yield f"data: {data_content}\n\n"
     
     return StreamingResponse(event_stream(), media_type="text/event-stream", headers={'Cache-Control': 'no-cache', 'Connection': 'keep-alive'})
+
+def get_execution_turns(exec_id):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("""
+        SELECT turn_number, prompt, logs, status, prompt_tokens, completion_tokens, total_tokens, cost, created_at 
+        FROM execution_turns 
+        WHERE execution_id = ? 
+        ORDER BY created_at DESC
+    """, (exec_id,))
+    turns = c.fetchall()
+    conn.close()
+    return [
+        {
+            "turn_number": t[0], "prompt": t[1], "logs": t[2], "status": t[3],
+            "prompt_tokens": t[4] or 0, "completion_tokens": t[5] or 0, "total_tokens": t[6] or 0, "cost": t[7] or 0.0, "created_at": t[8]
+        } for t in turns
+    ]
+
+@rt("/conversation/{exec_id}")
+def get_conversation(exec_id: int):
+    turns = get_execution_turns(exec_id)
+    
+    turn_elements = []
+    for t in turns:
+        metrics = f"Tokens: {t['total_tokens']} (P: {t['prompt_tokens']}, C: {t['completion_tokens']}) | Cost: ${t['cost']:.4f} | Status: {t['status']}"
+        turn_elements.append(Div(
+            H4(f"Turn {t['turn_number']} - {t['created_at']}"),
+            P(Small(metrics, style="color: #666;")),
+            P(Strong("Prompt:")),
+            Pre(t["prompt"], style="white-space: pre-wrap; background: #f0f0f0; padding: 10px; border-radius: 4px;"),
+            P(Strong("Logs:")),
+            Pre(t["logs"] or "No logs", cls="terminal", style="max-height: 200px; overflow-y: auto;"),
+            Hr(),
+            style="margin-bottom: 2rem; border-bottom: 1px solid #eee; padding-bottom: 1rem;"
+        ))
+
+    return Dialog(
+        Article(
+            Header(
+                Button(aria_label="Close", cls="close", onclick="this.closest('dialog').removeAttribute('open')"),
+                P(Strong(f"Conversation #{exec_id}"))
+            ),
+            Div(*turn_elements, id="conversation-content", style="overflow-y: auto; max-height: calc(90vh - 120px);"),
+            style="width: 70%; height: 90vh; max-width: none;"
+        ),
+        open=True, id="conversation-modal"
+    )
 
 @rt("/execution/{exec_id}")
 def get_execution_detail(exec_id: int):
@@ -497,18 +599,6 @@ def get_execution_detail(exec_id: int):
                     P(Strong("Live Logs:")),
                     Div(full_log_text, id=f"terminal-output-{exec_id}", cls="terminal", style="white-space: pre-wrap; height: 300px;"),
                 ),
-                Div(
-                    Form(
-                        Textarea(name="prompt", id=f"followup-input-{exec_id}", placeholder="Gõ yêu cầu tiếp theo...", rows=2, required=True, disabled=not is_waiting),
-                        Div(
-                            Button("Gửi lệnh", type="submit", cls="outline followup-btn", disabled=not is_waiting),
-                            Button("Đóng Phiên", type="button", hx_post=f"/execute/{exec_id}/stop", hx_swap="none", cls="outline secondary followup-btn", disabled=not is_waiting),
-                            style="display: flex; gap: 10px; margin-top: 10px;"
-                        ),
-                        hx_post=f"/execute/{exec_id}/message", hx_swap="none", id=f"followup-form-{exec_id}"
-                    ),
-                    cls="followup-box", id=f"followup-container-{exec_id}"
-                ),
                 Script(f"""
                     (function() {{
                         const term = document.getElementById('terminal-output-{exec_id}');
@@ -518,24 +608,9 @@ def get_execution_detail(exec_id: int):
                             const data = event.data;
                             term.textContent += data + '\\n';
                             term.scrollTop = term.scrollHeight;
-                            
-                            if (data.includes('[System: Gõ lệnh tiếp theo')) {{
-                                const fup = document.getElementById('followup-container-{exec_id}');
-                                if (fup) {{
-                                    fup.querySelectorAll('button.followup-btn, textarea').forEach(el => el.disabled = false);
-                                }}
-                            }}
-                            else if (data.includes('> User:')) {{
-                                const fup = document.getElementById('followup-container-{exec_id}');
-                                if (fup) {{
-                                    fup.querySelectorAll('button.followup-btn, textarea').forEach(el => el.disabled = true);
-                                }}
-                            }}
                         }};
                         source.onerror = function(event) {{
                             source.close();
-                            const fup = document.getElementById('followup-container-{exec_id}');
-                            if(fup) fup.style.display = 'none';
                         }};
                     }})();
                 """)
@@ -568,19 +643,19 @@ def get_execution_detail(exec_id: int):
         )
 
 @rt("/login")
-def get():
+def get_login():
     return Titled("Task runner", Main(Card(Form(Label("Username", fr="username"), Input(type="text", name="username", id="username", required=True), Label("Password", fr="password"), Input(type="password", name="password", id="password", required=True), Button("Login", type="submit"), action="/login", method="post"), header=Header(H2("Authentication Required"))), cls="container", style="max-width: 400px; margin-top: 100px;"))
 
 @rt("/login")
-def post(username: str, password: str, session):
+def post_login(username: str, password: str, session):
     if username == LOGIN_USER and password == LOGIN_PASS:
         session['auth'] = username
         return RedirectResponse("/", status_code=303)
     return Titled("Task runner", Main(Card(P("Invalid username or password", style="color: red"), Form(Label("Username", fr="username"), Input(type="text", name="username", id="username", required=True), Label("Password", fr="password"), Input(type="password", name="password", id="password", required=True), Button("Login", type="submit"), action="/login", method="post"), header=Header(H2("Authentication Required"))), cls="container", style="max-width: 400px; margin-top: 100px;"))
 
 @rt("/logout")
-def get(session):
+def get_logout(session):
     session.pop('auth', None)
     return RedirectResponse("/login", status_code=303)
 
-serve()
+serve(port=5003)
