@@ -1,0 +1,9 @@
+python-multipart
+uvicorn
+sqlite-minutils
+python-dotenv
+# Chỉ định version của starlette vì nếu không nó sẽ cài bản 1 và lỗi không tương thích với fasthtml
+python-fasthtml==0.12.50
+sse-starlette==3.3.3
+starlette==0.52.1
+openhands
