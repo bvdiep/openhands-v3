@@ -7,6 +7,7 @@ import os
 import uuid
 from typing import Dict, Any, Optional
 from dotenv import load_dotenv
+import json
 
 # Load environment variables
 load_dotenv()
@@ -153,3 +154,74 @@ def get_project_config() -> ProjectConfig:
             "Please call set_project_config() before using the pipeline."
         )
     return _current_project_config
+
+
+# --- Dynamic MCP Configuration ---
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+ALLOWED_USER_IDS_STR = os.getenv("ALLOWED_USER_IDS", "[]")
+try:
+    ALLOWED_USER_IDS = json.loads(ALLOWED_USER_IDS_STR)
+except json.JSONDecodeError:
+    ALLOWED_USER_IDS = []
+
+# List of all available MCP servers that the user can choose from
+AVAILABLE_MCP_SERVERS: Dict[str, Dict[str, Any]] = {
+    "telegram_bridge": {
+        "name": "Telegram Bridge",
+        "description": "Connect to Telegram via MCP",
+        "config": {
+            "type": "stdio",
+            "command": "/home/dd/work/diep/mcp-servers/mcp_telegram_oh/.venv/bin/python",
+            "args": [
+                "/home/dd/work/diep/mcp-servers/mcp_telegram_oh/server.py"
+            ],
+            "env": {
+                "TELEGRAM_BOT_TOKEN": TELEGRAM_BOT_TOKEN,
+                "ALLOWED_USER_IDS": ALLOWED_USER_IDS
+            }
+        }
+    },
+    "internet-search": {
+        "name": "Internet Search",
+        "description": "Search the internet via MCP",
+        "config": {
+            "type": "stdio",
+            "command": "/home/dd/work/diep/mcp-servers/mcp_internet_search/.venv/bin/python",
+            "args": ["/home/dd/work/diep/mcp-servers/mcp_internet_search/server.py"],
+            "env": {
+                "SERPER_API_KEY": os.getenv("SERPER_API_KEY", ""),
+                "VOYAGE_API_KEY": os.getenv("VOYAGE_API_KEY", ""),
+            }
+        }
+    }
+}
+
+
+def get_mcp_config(selected_ids: list[str]) -> Dict[str, Any]:
+    """
+    Filter and format MCP configurations based on user selection.
+    Compatible with standard MCP JSON format (including 'type': 'stdio').
+    
+    Args:
+        selected_ids: List of MCP IDs chosen by the user from the UI.
+        
+    Returns:
+        Dict: A dictionary of mcp_servers ready for OpenHands SDK.
+    """
+    mcp_servers = {}
+    for mcp_id in selected_ids:
+        if mcp_id in AVAILABLE_MCP_SERVERS:
+            raw_config = AVAILABLE_MCP_SERVERS[mcp_id]["config"]
+            
+            # Extract only the fields OpenHands SDK needs (command, args, env)
+            # This ensures compatibility even if 'type' or other fields are present
+            refined_config = {
+                "command": raw_config.get("command"),
+                "args": raw_config.get("args", []),
+            }
+            if "env" in raw_config:
+                refined_config["env"] = raw_config["env"]
+                
+            mcp_servers[mcp_id] = refined_config
+    
+    return {"mcpServers": mcp_servers} if mcp_servers else {}

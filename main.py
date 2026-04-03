@@ -10,6 +10,9 @@ from fasthtml.common import *
 from starlette.responses import StreamingResponse
 from dotenv import load_dotenv
 
+# Import MCP configuration
+from engine.config import AVAILABLE_MCP_SERVERS, get_mcp_config
+
 load_dotenv()
 
 LOGIN_USER = os.getenv("LOGIN_USER", "admin")
@@ -297,6 +300,20 @@ def get_index(session):
                         Input(type="text", name="workspace", id="workspace", required=True, value="."),
                     ),
                 ),
+                Div(
+                    H4("Select MCP Servers:"),
+                    Grid(
+                        *[Div(
+                            Label(
+                                Input(type="checkbox", name="mcp_ids", value=m_id, id=f"mcp-{m_id}"),
+                                Span(f" {m_info['name']}"),
+                                title=m_info['description']
+                            ),
+                            style="margin-bottom: 0.5rem;"
+                        ) for m_id, m_info in AVAILABLE_MCP_SERVERS.items()]
+                    ),
+                    style="margin-bottom: 1rem; padding: 1rem; border: 1px solid #eee; border-radius: 8px;"
+                ),
                 Label("Prompt:", fr="prompt"),
                 Textarea(name="prompt", id="prompt", rows=4, required=True, 
                          oninput="const btn = document.querySelector('.button-execute'); if(this.value.trim()){ btn.disabled = false; } else { btn.disabled = true; }"),
@@ -341,6 +358,10 @@ async def post_execute(request):
     workspace = form.get("workspace", "").strip()
     exec_id_active = form.get("exec_id", "").strip()
     
+    # Get selected MCP IDs
+    selected_mcp_ids = form.getlist("mcp_ids")
+    mcp_config = get_mcp_config(selected_mcp_ids)
+    
     if exec_id_active and exec_id_active.isdigit():
         exec_id = int(exec_id_active)
         if prompt and exec_id in execution_inputs:
@@ -366,7 +387,8 @@ async def post_execute(request):
         sys.stdout = writer
         try:
             from engine.runner import TaskRunner
-            runner = TaskRunner(workspace=workspace, model=model)
+            # Pass mcp_config to TaskRunner
+            runner = TaskRunner(workspace=workspace, model=model, mcp_config=mcp_config)
             success_init, _ = runner.start_session()
             if not success_init:
                 update_execution_status(exec_id, "error")
@@ -642,20 +664,20 @@ def get_execution_detail(exec_id: int):
             open=True, id="execution-modal"
         )
 
-@rt("/login")
+@app.get("/login")
 def get_login():
     return Titled("Task runner", Main(Card(Form(Label("Username", fr="username"), Input(type="text", name="username", id="username", required=True), Label("Password", fr="password"), Input(type="password", name="password", id="password", required=True), Button("Login", type="submit"), action="/login", method="post"), header=Header(H2("Authentication Required"))), cls="container", style="max-width: 400px; margin-top: 100px;"))
 
-@rt("/login")
+@app.post("/login")
 def post_login(username: str, password: str, session):
     if username == LOGIN_USER and password == LOGIN_PASS:
         session['auth'] = username
         return RedirectResponse("/", status_code=303)
     return Titled("Task runner", Main(Card(P("Invalid username or password", style="color: red"), Form(Label("Username", fr="username"), Input(type="text", name="username", id="username", required=True), Label("Password", fr="password"), Input(type="password", name="password", id="password", required=True), Button("Login", type="submit"), action="/login", method="post"), header=Header(H2("Authentication Required"))), cls="container", style="max-width: 400px; margin-top: 100px;"))
 
-@rt("/logout")
+@app.get("/logout")
 def get_logout(session):
     session.pop('auth', None)
     return RedirectResponse("/login", status_code=303)
 
-serve(port=5003)
+serve()
