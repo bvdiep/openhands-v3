@@ -335,6 +335,7 @@ def get_index(session):
                             this.dataset.activeExecId = execId;
                             const convLink = document.getElementById('conversation-link');
                             convLink.style.display = 'inline-block';
+                            convLink.innerText = 'Conversation #' + execId;
                         }
                     }
                 """
