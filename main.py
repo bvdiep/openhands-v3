@@ -43,15 +43,35 @@ def init_db():
             turn_number INTEGER,
             prompt TEXT NOT NULL,
             logs TEXT,
+            agent_message TEXT,
             prompt_tokens INTEGER,
             completion_tokens INTEGER,
             total_tokens INTEGER,
+            reasoning_tokens INTEGER,
+            cache_read_tokens INTEGER,
+            cache_write_tokens INTEGER,
+            latency REAL,
             cost REAL,
             status TEXT NOT NULL,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (execution_id) REFERENCES executions(id)
         )
     ''')
+    
+    # Check if agent_message column exists
+    c.execute("PRAGMA table_info(execution_turns)")
+    columns = [col[1] for col in c.fetchall()]
+    if "agent_message" not in columns:
+        c.execute("ALTER TABLE execution_turns ADD COLUMN agent_message TEXT")
+    if "reasoning_tokens" not in columns:
+        c.execute("ALTER TABLE execution_turns ADD COLUMN reasoning_tokens INTEGER")
+    if "cache_read_tokens" not in columns:
+        c.execute("ALTER TABLE execution_turns ADD COLUMN cache_read_tokens INTEGER")
+    if "cache_write_tokens" not in columns:
+        c.execute("ALTER TABLE execution_turns ADD COLUMN cache_write_tokens INTEGER")
+    if "latency" not in columns:
+        c.execute("ALTER TABLE execution_turns ADD COLUMN latency REAL")
+
     conn.commit()
     conn.close()
 
@@ -86,7 +106,8 @@ def add_execution_turn(exec_id, turn_number, prompt):
     conn.close()
     return turn_id
 
-def update_turn_status(turn_id, status, logs=None, prompt_tokens=None, completion_tokens=None, total_tokens=None, cost=None):
+def update_turn_status(turn_id, status, logs=None, prompt_tokens=None, completion_tokens=None, total_tokens=None, cost=None,
+                       agent_message=None, reasoning_tokens=None, cache_read_tokens=None, cache_write_tokens=None, latency=None):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     update_fields = ["status = ?"]
@@ -95,6 +116,9 @@ def update_turn_status(turn_id, status, logs=None, prompt_tokens=None, completio
     if logs is not None:
         update_fields.append("logs = ?")
         params.append(logs)
+    if agent_message is not None:
+        update_fields.append("agent_message = ?")
+        params.append(agent_message)
     if prompt_tokens is not None:
         update_fields.append("prompt_tokens = ?")
         params.append(prompt_tokens)
@@ -104,6 +128,18 @@ def update_turn_status(turn_id, status, logs=None, prompt_tokens=None, completio
     if total_tokens is not None:
         update_fields.append("total_tokens = ?")
         params.append(total_tokens)
+    if reasoning_tokens is not None:
+        update_fields.append("reasoning_tokens = ?")
+        params.append(reasoning_tokens)
+    if cache_read_tokens is not None:
+        update_fields.append("cache_read_tokens = ?")
+        params.append(cache_read_tokens)
+    if cache_write_tokens is not None:
+        update_fields.append("cache_write_tokens = ?")
+        params.append(cache_write_tokens)
+    if latency is not None:
+        update_fields.append("latency = ?")
+        params.append(latency)
     if cost is not None:
         update_fields.append("cost = ?")
         params.append(cost)
@@ -181,20 +217,34 @@ def render_history(page=1):
 
     return Div(
         H3("Execution History"),
-        Table(
-            Thead(Tr(Th("ID"), Th("Prompt"), Th("Model"), Th("Status"), Th("Turns"), Th("Tokens/Cost"), Th("Created At"))),
-            Tbody(
-                *[Tr(
-                    Td(A(str(exec["id"]), hx_get=f"/conversation/{exec['id']}", hx_target="#modal-placeholder")),
-                    Td(exec["prompt"][:50] + ("..." if len(exec["prompt"]) > 50 else "")),
-                    Td(exec["model"]),
-                    Td(exec["status"], cls=f"status-{exec['status']}"),
-                    Td(str(exec["turns_count"])),
-                    Td(f"{exec['total_tokens']} / ${exec['cost']:.4f}"),
-                    Td(exec["created_at"])
-                ) for exec in executions]
-            ) if executions else Tr(Td("No executions yet", colspan=7)),
-            cls="history-table"
+        Div(
+            *[Article(
+                Div(
+                    Div(
+                        A(f"Execution #{exec['id']}", hx_get=f"/conversation/{exec['id']}", hx_target="#modal-placeholder", style="font-weight: bold; font-size: 1.1rem;"),
+                        cls="card-header"
+                    ),
+                    Div(
+                        P(Strong("Prompt: "), Span(exec["prompt"][:200] + ("..." if len(exec["prompt"]) > 200 else ""))),
+                        Div(
+                            Div(Small("Model: "), Strong(exec["model"])),
+                            Div(Small("Workspace: "), Span(exec["workspace"])),
+                            Div(Small("Turns: "), Span(str(exec["turns_count"]))),
+                            Div(Small("Usage: "), Span(f"{exec['total_tokens']} tokens / ${exec['cost']:.4f}")),
+                            cls="card-grid"
+                        ),
+                        cls="card-body"
+                    ),
+                    Div(
+                        Small(exec["created_at"], style="color: #999;"),
+                        A("Copy", href="#", onclick=f"resumeTask({json.dumps(exec['prompt'])}, {json.dumps(exec['model'])}, {json.dumps(exec['workspace'])}); return false;",
+                          style="font-size: 0.9rem; text-decoration: underline;"),
+                        cls="card-footer"
+                    ),
+                ),
+                cls="execution-card"
+            ) for exec in executions] if executions else P("No executions yet"),
+            cls="history-cards"
         ),
         Div(*pagination_controls, cls="pagination-container")
     )
@@ -239,12 +289,105 @@ app, rt = fast_app(
     pico=True,
     before=auth_before,
     hdrs=(
+        Script(src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"),
+        Script("""
+            function resumeTask(prompt, model, workspace) {
+                document.getElementById('prompt').value = prompt;
+                document.getElementById('model').value = model;
+                document.getElementById('workspace').value = workspace;
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+                const btn = document.querySelector('.button-execute');
+                if(prompt.trim()) btn.disabled = false;
+            }
+        """),
         Style("""
             .terminal { 
                 border: 1px solid #ccc; padding: 1rem; margin: 1rem 0; min-height: 100px; 
                 background-color: #1e1e1e; color: #d4d4d4; font-family: 'Courier New', monospace;
                 overflow-y: auto; max-height: 500px; white-space: pre-wrap; border-radius: 4px;
             }
+            .markdown-content { 
+                background: #e8f4fd; padding: 15px; border-radius: 4px; margin-bottom: 10px; 
+                border-left: 4px solid #2196F3; line-height: 1.6;
+            }
+            .markdown-content h1, .markdown-content h2, .markdown-content h3 { margin-top: 1rem; margin-bottom: 0.5rem; }
+            .markdown-content p { margin-bottom: 0.8rem; }
+            .markdown-content code { background: #f0f0f0; padding: 2px 4px; border-radius: 3px; font-family: monospace; }
+            .markdown-content pre { background: #f8f8f8; padding: 10px; border-radius: 4px; overflow-x: auto; }
+            .markdown-content pre code { background: transparent; padding: 0; }
+            .markdown-content ul, .markdown-content ol { padding-left: 1.5rem; margin-bottom: 1rem; }
+            
+            details.log-accordion { 
+                border: 1px solid #eee; border-radius: 4px; margin-top: 10px; 
+            }
+            details.log-accordion summary { 
+                padding: 8px 12px; cursor: pointer; background: #f9f9f9; font-weight: bold; list-style: none;
+            }
+            details.log-accordion summary::-webkit-details-marker { display: none; }
+            details.log-accordion summary:hover { background: #f0f0f0; }
+            details.log-accordion[open] summary { border-bottom: 1px solid #eee; margin-bottom: 10px; }
+            
+            .turn-header {
+                display: grid;
+                grid-template-columns: auto 1fr auto;
+                gap: 20px;
+                align-items: center;
+                background: #f8f9fa;
+                padding: 10px 15px;
+                border-radius: 6px;
+                margin-bottom: 15px;
+                border: 1px solid #e9ecef;
+            }
+            .turn-metrics {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 10px;
+                font-size: 0.85rem;
+                color: #666;
+            }
+            .metric-badge {
+                background: #fff;
+                padding: 2px 8px;
+                border-radius: 4px;
+                border: 1px solid #dee2e6;
+            }
+            
+            .execution-card {
+                margin-bottom: 1.5rem;
+                padding: 1.2rem;
+                border: 1px solid #e1e4e8;
+                border-radius: 10px;
+                background: white;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+            }
+            .card-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 1rem;
+                border-bottom: 1px solid #f1f1f1;
+                padding-bottom: 0.5rem;
+            }
+            .card-body p { margin-bottom: 0.8rem; }
+            .card-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                gap: 15px;
+                font-size: 0.9rem;
+                margin-top: 10px;
+                background: #fcfcfc;
+                padding: 10px;
+                border-radius: 6px;
+            }
+            .card-footer {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-top: 1rem;
+                padding-top: 0.8rem;
+                border-top: 1px solid #f1f1f1;
+            }
+            
             .user-msg { color: #569cd6; font-weight: bold; }
             .sys-msg { color: #c586c0; font-style: italic; }
             .history-table { width: 100%; border-collapse: collapse; }
@@ -263,9 +406,28 @@ app, rt = fast_app(
             .spinner { display: inline-block; width: 1.2rem; height: 1.2rem; border: 2px solid rgba(255,255,255,.3); border-radius: 50%; border-top-color: #fff; animation: spin 0.8s linear infinite; margin-right: 0.5rem; }
             @keyframes spin { to { transform: rotate(360deg); } }
             .button-execute { width: 150px !important; display: inline-block !important; margin-right: 1rem !important; }
-            #execution-modal article { width: 90%; max-width: 1200px; }
+            #execution-modal article { width: 95%; max-width: 1200px; }
             .conversation-link { display: inline-block; vertical-align: middle; }
-            #conversation-modal article { width: 70%; height: 90vh; max-width: none; }
+            #conversation-modal article { 
+                width: 95%; 
+                max-width: 1200px;
+                height: 90vh; 
+            }
+            @media (min-width: 768px) {
+                #conversation-modal article { width: 80%; }
+            }
+            @media (min-width: 1200px) {
+                #conversation-modal article { width: 70%; }
+            }
+            @media (max-width: 767px) {
+                .turn-header {
+                    grid-template-columns: 1fr;
+                    gap: 10px;
+                }
+                .turn-metrics {
+                    order: 3;
+                }
+            }
             .pagination-container { display: flex; align-items: center; justify-content: center; margin-top: 1rem; gap: 1rem; }
             .pagination-container button { margin-bottom: 0; }
             .followup-box { background: #f4f4f4; padding: 1rem; border-radius: 8px; margin-top: 1rem; border: 1px solid #ccc; }
@@ -407,9 +569,14 @@ async def post_execute(request):
                 status = "success" if success else "error"
                 update_turn_status(
                     turn_id, status, writer.get_logs(),
+                    agent_message=metrics.get("agent_message"),
                     prompt_tokens=metrics.get("prompt_tokens"),
                     completion_tokens=metrics.get("completion_tokens"),
                     total_tokens=metrics.get("total_tokens"),
+                    reasoning_tokens=metrics.get("reasoning_tokens"),
+                    cache_read_tokens=metrics.get("cache_read_tokens"),
+                    cache_write_tokens=metrics.get("cache_write_tokens"),
+                    latency=metrics.get("latency"),
                     cost=metrics.get("cost")
                 )
                 writer.clear_logs()
@@ -544,7 +711,8 @@ def get_execution_turns(exec_id):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("""
-        SELECT turn_number, prompt, logs, status, prompt_tokens, completion_tokens, total_tokens, cost, created_at 
+        SELECT turn_number, prompt, logs, status, prompt_tokens, completion_tokens, total_tokens, cost, created_at,
+               agent_message, reasoning_tokens, cache_read_tokens, cache_write_tokens, latency
         FROM execution_turns 
         WHERE execution_id = ? 
         ORDER BY created_at DESC
@@ -554,7 +722,8 @@ def get_execution_turns(exec_id):
     return [
         {
             "turn_number": t[0], "prompt": t[1], "logs": t[2], "status": t[3],
-            "prompt_tokens": t[4] or 0, "completion_tokens": t[5] or 0, "total_tokens": t[6] or 0, "cost": t[7] or 0.0, "created_at": t[8]
+            "prompt_tokens": t[4] or 0, "completion_tokens": t[5] or 0, "total_tokens": t[6] or 0, "cost": t[7] or 0.0, "created_at": t[8],
+            "agent_message": t[9], "reasoning_tokens": t[10] or 0, "cache_read_tokens": t[11] or 0, "cache_write_tokens": t[12] or 0, "latency": t[13] or 0.0
         } for t in turns
     ]
 
@@ -564,16 +733,30 @@ def get_conversation(exec_id: int):
     
     turn_elements = []
     for t in turns:
-        metrics = f"Tokens: {t['total_tokens']} (P: {t['prompt_tokens']}, C: {t['completion_tokens']}) | Cost: ${t['cost']:.4f} | Status: {t['status']}"
+        metrics_badges = [
+            Span(f"Tokens: {t['total_tokens']} (P: {t['prompt_tokens']}, C: {t['completion_tokens']})", cls="metric-badge"),
+            Span(f"Reasoning: {t['reasoning_tokens']}", cls="metric-badge"),
+            Span(f"Cache: R {t['cache_read_tokens']}, W {t['cache_write_tokens']}", cls="metric-badge"),
+            Span(f"Latency: {t['latency']:.2f}s", cls="metric-badge"),
+            Span(f"Cost: ${t['cost']:.4f}", cls="metric-badge"),
+            Span(f"Status: {t['status']}", cls=f"metric-badge status-{t['status']}")
+        ]
+        
         turn_elements.append(Div(
-            H4(f"Turn {t['turn_number']} - {t['created_at']}"),
-            P(Small(metrics, style="color: #666;")),
-            P(Strong("Prompt:")),
+            Div(
+                H4(f"Turn {t['turn_number']}", style="margin:0;"),
+                Div(*metrics_badges, cls="turn-metrics"),
+                Small(t['created_at'], style="color: #999;"),
+                cls="turn-header"
+            ),
             Pre(t["prompt"], style="white-space: pre-wrap; background: #f0f0f0; padding: 10px; border-radius: 4px;"),
-            P(Strong("Logs:")),
-            Pre(t["logs"] or "No logs", cls="terminal", style="max-height: 200px; overflow-y: auto;"),
-            Hr(),
-            style="margin-bottom: 2rem; border-bottom: 1px solid #eee; padding-bottom: 1rem;"
+            Div(t["agent_message"] or "No message", cls="markdown-content"),
+            Details(
+                Summary("📜 View Logs", style="color: #007acc; text-decoration: underline;"),
+                Pre(t["logs"] or "No logs", cls="terminal", style="max-height: 250px; overflow-y: auto;"),
+                cls="log-accordion"
+            ),
+            style="margin-bottom: 1rem; padding-bottom: 1rem;"
         ))
 
     return Dialog(
@@ -582,8 +765,15 @@ def get_conversation(exec_id: int):
                 Button(aria_label="Close", cls="close", onclick="this.closest('dialog').removeAttribute('open')"),
                 P(Strong(f"Conversation #{exec_id}"))
             ),
-            Div(*turn_elements, id="conversation-content", style="overflow-y: auto; max-height: calc(90vh - 120px);"),
-            style="width: 70%; height: 90vh; max-width: none;"
+            Div(*turn_elements, id="conversation-content", style="overflow-y: auto; max-height: calc(90vh - 150px);"),
+            Script("""
+                document.querySelectorAll('.markdown-content').forEach(function(el) {
+                    if (!el.dataset.rendered) {
+                        el.innerHTML = marked.parse(el.textContent || el.innerText);
+                        el.dataset.rendered = "true";
+                    }
+                });
+            """)
         ),
         open=True, id="conversation-modal"
     )

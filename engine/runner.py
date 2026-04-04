@@ -2,6 +2,7 @@ from typing import List, Optional, Dict, Any
 import os
 import traceback
 from openhands.sdk import LLM, Agent, Conversation, Tool
+from openhands.sdk.event import Event, MessageEvent, ActionEvent, ObservationEvent
 from openhands.tools.terminal import TerminalTool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.browser_use import BrowserToolSet
@@ -75,13 +76,41 @@ class TaskRunner:
         print(f"🚀 OpenHands Runner session starting at: {self.workspace}")
         print(f"🤖 Model: {self.model}")
         metrics = {}
+        self._agent_messages = []
         try:
-            self.conversation = Conversation(agent=self.agent, workspace=self.workspace)
+            self.conversation = Conversation(
+                agent=self.agent, 
+                workspace=self.workspace,
+                callbacks=[self._on_event]
+            )
             return True, metrics
         except Exception as e:
             print(f"\n❌ Lỗi khởi tạo session: {e}")
             traceback.print_exc()
             return False, metrics
+
+    def _on_event(self, event: Event):
+        try:
+            if isinstance(event, MessageEvent):
+                if getattr(event, 'source', '') == 'agent':
+                    llm_msg = getattr(event, 'llm_message', None)
+                    if llm_msg and getattr(llm_msg, 'role', '') == 'assistant':
+                        msg_content = getattr(llm_msg, 'content', [])
+                        text_parts = [
+                            getattr(part, 'text', '')
+                            for part in msg_content
+                            if getattr(part, 'type', '') == 'text'
+                        ]
+                        if text_parts:
+                            self._agent_messages.append("".join(text_parts))
+            elif isinstance(event, ActionEvent):
+                action = getattr(event, 'action', None)
+                if action and type(action).__name__ == 'FinishAction':
+                    msg = getattr(action, 'message', '')
+                    if msg:
+                        self._agent_messages.append(msg)
+        except Exception:
+            pass
 
     def send_task(self, task_prompt: str, success_message: str = "Nhiệm vụ hoàn tất!"):
         """Send a task to an existing session."""
@@ -91,6 +120,7 @@ class TaskRunner:
             return False, metrics
 
         try:
+            num_before = len(self._agent_messages)
             self.conversation.send_message(task_prompt)
             print("--- Đang thực thi ---")
             self.conversation.run()
@@ -98,11 +128,18 @@ class TaskRunner:
             # Extract metrics
             if hasattr(self.llm, 'metrics'):
                 m = self.llm.metrics
+                tu = m.accumulated_token_usage
+                new_messages = self._agent_messages[num_before:]
                 metrics = {
-                    "prompt_tokens": m.accumulated_token_usage.prompt_tokens,
-                    "completion_tokens": m.accumulated_token_usage.completion_tokens,
-                    "total_tokens": m.accumulated_token_usage.prompt_tokens + m.accumulated_token_usage.completion_tokens,
-                    "cost": m.accumulated_cost
+                    "prompt_tokens": tu.prompt_tokens or 0,
+                    "completion_tokens": tu.completion_tokens or 0,
+                    "total_tokens": (tu.prompt_tokens or 0) + (tu.completion_tokens or 0),
+                    "cost": m.accumulated_cost or 0.0,
+                    "reasoning_tokens": tu.reasoning_tokens or 0,
+                    "cache_read_tokens": tu.cache_read_tokens or 0,
+                    "cache_write_tokens": tu.cache_write_tokens or 0,
+                    "latency": m.response_latencies[-1].latency if m.response_latencies else 0.0,
+                    "agent_message": new_messages[-1] if new_messages else ""
                 }
             print(f"\n✅ {success_message}")
             return True, metrics
