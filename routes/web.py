@@ -100,7 +100,15 @@ def _sse_live_script(exec_id: int) -> str:
         const promptArea = document.getElementById('prompt');
         const taskForm = document.getElementById('task-form');
 
+        function setOptionsLocked(locked) {{
+            document.querySelectorAll('.options-section').forEach(function(sec) {{
+                sec.classList.toggle('options-locked', locked);
+                sec.querySelectorAll('input, select').forEach(function(el) {{ el.disabled = locked; }});
+            }});
+        }}
+
         if (btn) {{ btn.classList.add('is-loading'); btn.disabled = true; }}
+        setOptionsLocked(true);
 
         const source = new EventSource('/stream/{exec_id}');
 
@@ -175,6 +183,7 @@ def _sse_live_script(exec_id: int) -> str:
                 if(inputExec) inputExec.remove();
             }}
             if(promptArea) promptArea.placeholder = '';
+            setOptionsLocked(false);
         }};
     }})();
     """

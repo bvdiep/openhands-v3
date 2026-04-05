@@ -146,6 +146,10 @@ details.log-accordion[open] summary { border-bottom: 1px solid #eee; margin-bott
     border-radius: 8px;
 }
 .options-section h4 { margin-bottom: 0.5rem; }
+.options-locked {
+    opacity: 0.5;
+    pointer-events: none;
+}
 .option-with-info {
     display: flex;
     align-items: center;
