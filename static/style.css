@@ -138,14 +138,39 @@ details.log-accordion[open] summary { border-bottom: 1px solid #eee; margin-bott
     flex-wrap: wrap;
 }
 
-/* Skills link */
-.skills-link {
-    font-size: 0.95rem;
-    text-decoration: underline;
-    cursor: pointer;
-    color: #007acc;
+/* Options sections (Skills, MCP) */
+.options-section {
+    margin-bottom: 1rem;
+    padding: 1rem;
+    border: 1px solid #eee;
+    border-radius: 8px;
 }
-.skills-link:hover { color: #005a9e; }
+.options-section h4 { margin-bottom: 0.5rem; }
+.option-with-info {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 0.5rem;
+}
+.option-with-info label { margin-bottom: 0; }
+.info-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: #e9ecef;
+    color: #495057;
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-decoration: none;
+    cursor: pointer;
+    flex-shrink: 0;
+    line-height: 1;
+    transition: background 0.15s, color 0.15s;
+}
+.info-icon:hover { background: #007acc; color: #fff; }
 
 /* Skills modal */
 #skills-modal article {

@@ -112,7 +112,8 @@ class QueueWriter:
 # Execution thread
 # ---------------------------------------------------------------------------
 
-def start_execution_thread(exec_id, prompt, model, workspace, mcp_config, loop, q, in_q):
+def start_execution_thread(exec_id, prompt, model, workspace, mcp_config, loop, q, in_q,
+                           load_public_skills=True, load_user_skills=True):
     def run_task_thread():
         writer = QueueWriter(q, loop)
         set_thread_writer(writer)
@@ -133,7 +134,12 @@ def start_execution_thread(exec_id, prompt, model, workspace, mcp_config, loop, 
 
                 asyncio.run_coroutine_threadsafe(q.put({"event": "agent_thought", "data": thought_data}), loop)
 
-            runner = TaskRunner(workspace=workspace, model=model, mcp_config=mcp_config, on_thought=on_thought)
+            runner = TaskRunner(
+                workspace=workspace, model=model, mcp_config=mcp_config,
+                on_thought=on_thought,
+                load_public_skills=load_public_skills,
+                load_user_skills=load_user_skills,
+            )
             success_init, _ = runner.start_session()
             if not success_init:
                 update_execution_status(exec_id, "error")

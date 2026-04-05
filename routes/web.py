@@ -17,7 +17,7 @@ from services.execution import (
     register_execution,
     start_execution_thread,
 )
-from services.skills import get_all_skills, skill_to_dict
+from services.skills import get_public_skills, get_user_skills, skill_trigger_label
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +248,32 @@ def register(app, rt):  # noqa: C901  (complex but faithful port)
                         ),
                     ),
                     Div(
+                        H4("Skills:"),
+                        Grid(
+                            Div(
+                                Label(
+                                    Input(type="checkbox", name="skill_opts", value="public", id="skill-public", checked=True),
+                                    Span(" Public Skills"),
+                                ),
+                                A("ⓘ", href="#", title="View public skills",
+                                  hx_get="/skills/public", hx_target="#modal-placeholder", hx_trigger="click",
+                                  cls="info-icon"),
+                                cls="option-with-info",
+                            ),
+                            Div(
+                                Label(
+                                    Input(type="checkbox", name="skill_opts", value="user", id="skill-user", checked=True),
+                                    Span(" User Skills"),
+                                ),
+                                A("ⓘ", href="#", title="View user skills",
+                                  hx_get="/skills/user", hx_target="#modal-placeholder", hx_trigger="click",
+                                  cls="info-icon"),
+                                cls="option-with-info",
+                            ),
+                        ),
+                        cls="options-section",
+                    ),
+                    Div(
                         H4("Select MCP Servers:"),
                         Grid(
                             *[
@@ -262,7 +288,7 @@ def register(app, rt):  # noqa: C901  (complex but faithful port)
                                 for m_id, m_info in AVAILABLE_MCP_SERVERS.items()
                             ]
                         ),
-                        style="margin-bottom: 1rem; padding: 1rem; border: 1px solid #eee; border-radius: 8px;",
+                        cls="options-section",
                     ),
                     Label("Prompt:", fr="prompt"),
                     Textarea(
@@ -276,11 +302,6 @@ def register(app, rt):  # noqa: C901  (complex but faithful port)
                         cls="button-execute", disabled=True,
                     ),
                     Div(
-                        A(
-                            "🧩 Skills", href="#",
-                            hx_get="/skills", hx_target="#modal-placeholder", hx_trigger="click",
-                            cls="skills-link",
-                        ),
                         A(
                             "Conversation", id="conversation-link", cls="conversation-link", href="#",
                             hx_get="/conversation", hx_target="#modal-placeholder", hx_trigger="click",
@@ -314,34 +335,28 @@ def register(app, rt):  # noqa: C901  (complex but faithful port)
     def get_history(page: int = 1):
         return _render_history(page)
 
-    @rt("/skills")
-    def get_skills():
-        skills = get_all_skills()
+    def _render_skills_modal(skills, title):
         skill_items = []
         for s in skills:
-            if s.trigger is None:
-                trigger_badge = Span("Always active", cls="skill-badge skill-badge-always")
-            else:
-                words = getattr(s.trigger, "keywords", None) or getattr(s.trigger, "triggers", [])
-                label = ", ".join(words[:3]) + ("…" if len(words) > 3 else "")
-                trigger_badge = Span(f"Keyword: {label}", cls="skill-badge skill-badge-keyword")
+            label_text, badge_cls = skill_trigger_label(s)
             skill_items.append(
                 Div(
                     Div(
                         Strong(s.name),
-                        trigger_badge,
+                        Span(label_text, cls=f"skill-badge {badge_cls}"),
                         cls="skill-item-header",
                     ),
                     P(s.description or "No description", cls="skill-item-desc"),
                     cls="skill-item",
                 )
             )
-
+        if not skill_items:
+            skill_items = [P("No skills found.", style="color: #999; text-align: center; padding: 2rem 0;")]
         return Dialog(
             Article(
                 Header(
                     Button(aria_label="Close", cls="close", onclick="this.closest('dialog').removeAttribute('open')"),
-                    P(Strong(f"🧩 Skills ({len(skills)})")),
+                    P(Strong(f"🧩 {title} ({len(skills)})")),
                 ),
                 Div(*skill_items, cls="skills-list"),
                 Footer(
@@ -350,6 +365,14 @@ def register(app, rt):  # noqa: C901  (complex but faithful port)
             ),
             open=True, id="skills-modal",
         )
+
+    @rt("/skills/public")
+    def get_public_skills_modal():
+        return _render_skills_modal(get_public_skills(), "Public Skills")
+
+    @rt("/skills/user")
+    def get_user_skills_modal():
+        return _render_skills_modal(get_user_skills(), "User Skills")
 
     @rt("/execute")
     async def post_execute(request):
@@ -360,6 +383,7 @@ def register(app, rt):  # noqa: C901  (complex but faithful port)
         exec_id_active = form.get("exec_id", "").strip()
         selected_mcp_ids = form.getlist("mcp_ids")
         mcp_config = get_mcp_config(selected_mcp_ids)
+        skill_opts = form.getlist("skill_opts")
 
         if exec_id_active and exec_id_active.isdigit():
             exec_id = int(exec_id_active)
@@ -378,7 +402,11 @@ def register(app, rt):  # noqa: C901  (complex but faithful port)
         in_q = queue_module.Queue()
         register_execution(exec_id, q, in_q)
 
-        start_execution_thread(exec_id, prompt, model, workspace, mcp_config, loop, q, in_q)
+        start_execution_thread(
+            exec_id, prompt, model, workspace, mcp_config, loop, q, in_q,
+            load_public_skills="public" in skill_opts,
+            load_user_skills="user" in skill_opts,
+        )
 
         return Div(
             H4(f"Execution #{exec_id} started"),

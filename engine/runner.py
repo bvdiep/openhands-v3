@@ -22,7 +22,9 @@ class TaskRunner:
         agent_name: str = "OpenHands-Agent",
         mcp_config: Optional[Dict[str, Any]] = None,
         system_prompt: Optional[str] = None,
-        on_thought: Optional[callable] = None
+        on_thought: Optional[callable] = None,
+        load_public_skills: bool = True,
+        load_user_skills: bool = True,
     ):
         """
         Initialize the TaskRunner.
@@ -58,8 +60,8 @@ class TaskRunner:
         
         # Setup AgentContext with skills
         self.agent_context = AgentContext(
-            load_public_skills=True,
-            load_user_skills=True,
+            load_public_skills=load_public_skills,
+            load_user_skills=load_user_skills,
         )
 
         # Setup Agent
