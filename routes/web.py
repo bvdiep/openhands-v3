@@ -304,21 +304,21 @@ def register(app, rt):  # noqa: C901  (complex but faithful port)
                         name="prompt", id="prompt", rows=4, required=True,
                         oninput="const btn = document.querySelector('.button-execute'); if(this.value.trim()){ btn.disabled = false; } else { btn.disabled = true; }",
                     ),
-                    Button(
-                        Div(Span(cls="spinner"), "Execute", cls="loading-indicator"),
-                        Span("Execute", cls="normal-text"),
-                        type="submit", hx_post="/execute", hx_target="#loading-indicator", hx_swap="none",
-                        cls="button-execute", disabled=True,
-                    ),
                     Div(
+                        Button(
+                            Div(Span(cls="spinner"), "Execute", cls="loading-indicator"),
+                            Span("Execute", cls="normal-text"),
+                            type="submit", hx_post="/execute", hx_target="#loading-indicator", hx_swap="none",
+                            cls="button-execute", disabled=True,
+                        ),
                         A(
                             "Conversation", id="conversation-link", cls="conversation-link", href="#",
                             hx_get="/conversation", hx_target="#modal-placeholder", hx_trigger="click",
                             onclick="const execId = document.getElementById('task-form').dataset.activeExecId; if(!execId) { alert('No active execution'); return false; } this.setAttribute('hx-get', '/conversation/' + execId); htmx.process(this);",
                             style="display:none",
                         ),
-                        Span(id="live-thought-indicator", style="font-style: italic; color: #666; vertical-align: middle;"),
-                        cls="form-actions-row",
+                        Span(id="live-thought-indicator"),
+                        cls="execute-row",
                     ),
                     id="task-form",
                     hx_on__after_request="""

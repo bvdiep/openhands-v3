@@ -102,7 +102,7 @@ details.log-accordion[open] summary { border-bottom: 1px solid #eee; margin-bott
 .htmx-request.button-execute, .is-loading.button-execute { pointer-events: none; opacity: 0.8; }
 .spinner { display: inline-block; width: 1.2rem; height: 1.2rem; border: 2px solid rgba(255,255,255,.3); border-radius: 50%; border-top-color: #fff; animation: spin 0.8s linear infinite; margin-right: 0.5rem; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.button-execute { width: 150px !important; display: inline-block !important; margin-right: 1rem !important; }
+.button-execute { width: 150px !important; display: inline-block !important; margin-bottom: 0 !important; }
 #execution-modal article { width: 95%; max-width: 1200px; }
 .conversation-link { display: inline-block; vertical-align: middle; }
 #conversation-modal article { 
@@ -129,13 +129,18 @@ details.log-accordion[open] summary { border-bottom: 1px solid #eee; margin-bott
 .pagination-container button { margin-bottom: 0; }
 .followup-box { background: #f4f4f4; padding: 1rem; border-radius: 8px; margin-top: 1rem; border: 1px solid #ccc; }
 
-/* Form actions row */
-.form-actions-row {
+/* Execute row */
+.execute-row {
     display: flex;
     align-items: center;
     gap: 1rem;
-    margin-top: 0.5rem;
     flex-wrap: wrap;
+}
+#live-thought-indicator {
+    font-style: italic;
+    color: #666;
+    font-size: 0.9rem;
+    min-width: 0;
 }
 
 /* Options sections (Skills, MCP) */
