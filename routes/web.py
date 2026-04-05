@@ -26,10 +26,9 @@ from services.skills import get_public_skills, get_user_skills, skill_trigger_la
 
 MODELS = [
     "gemini/gemini-3-flash-preview",
-    "gemini/gemini-2.0-flash-exp",
-    "openai/gpt-4o",
+    "gemini/gemini-3.1-pro-preview",
     "openai/gpt-4o-mini",
-    "anthropic/claude-3-5-sonnet-20240620",
+    "bedrock/us.anthropic.claude-opus-4-6-v1",
 ]
 
 
@@ -420,7 +419,7 @@ def register(app, rt):  # noqa: C901  (complex but faithful port)
         return Div(
             H4(f"Execution #{exec_id} started"),
             Div(id=f"conversation-flow-{exec_id}", cls="conversation-flow",
-                style="margin-bottom: 1rem; max-height: 300px; overflow-y: auto; padding: 10px; background: #f9f9f9; border-radius: 8px;"),
+                style="margin-bottom: 1rem; overflow-y: auto; padding: 10px; background: #f9f9f9; border-radius: 8px;"),
             Div(id=f"terminal-output-{exec_id}", cls="terminal", style="height: 300px;"),
             Script(_sse_live_script(exec_id)),
             id=f"execution-{exec_id}",
