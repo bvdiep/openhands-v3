@@ -95,12 +95,18 @@ Fetch the current status and metrics of an execution.
 **Response:**
 ```json
 {
-  "status": "waiting_for_input",
+  "status": "running",
   "last_agent_message": "I have listed the files in the directory. What would you like me to do next?",
   "current_turn": 1,
   "metrics": {
     "total_tokens": 1500,
     "cost": 0.015
+  },
+  "current_thought": {
+    "step": "BrowserNavigateAction",
+    "summary": "Search for news on Iran",
+    "reasoning": "Detailed block of text explaining why...",
+    "timestamp": "2026-04-05T14:00:00.000000"
   }
 }
 ```
@@ -113,9 +119,14 @@ Fetch the current status and metrics of an execution.
     - `error`: An error occurred during execution.
 - `last_agent_message`: This contains the textual response from the agent in the most recent turn. When `status` is `waiting_for_input`, this message usually explains what the agent has done or asks the user for clarification/next steps.
 - `current_turn`: The sequence number of the most recent turn.
+- `current_thought`: A structured object representing the agent's *active* step, including:
+    - `step`: The action name (e.g., `BrowserNavigateAction`).
+    - `summary`: A high-level description of what the agent is doing.
+    - `reasoning`: The detailed thought process behind this specific action.
+    - `timestamp`: When this step was initiated.
 
 **Integrator Tip:**
-To distinguish between an ongoing task and a request for user input, check if `status` is `waiting_for_input`. If it is, you should display `last_agent_message` to the user and provide an interface for them to send a follow-up message using the `/api/execute/{execution_id}/message` endpoint.
+To distinguish between an ongoing task and a request for user input, check if `status` is `waiting_for_input`. If it is, you should display `last_agent_message` to the user and provide an interface for them to send a follow-up message using the `/api/execute/{execution_id}/message` endpoint. For real-time updates, the `current_thought` provides granular visibility into the agent's internal steps.
 
 **cURL Example:**
 ```bash
@@ -146,3 +157,50 @@ curl -X POST http://localhost:8101/api/execute/123/stop \
 
 - **Timeouts**: If an execution session is waiting for input and no message is received within 3600 seconds (1 hour), the session will automatically terminate to free up resources.
 - **Heartbeats**: The SSE stream sends periodic keep-alive comments (`: heartbeat`) every 15 seconds to prevent connection drops by proxies or load balancers.
+
+### 6. Get Conversation Messages
+
+Retrieve a structured list of all agent messages for a specific execution.
+
+**Endpoint:** `GET /api/execute/{execution_id}/messages`
+
+**Response:**
+```json
+{
+  "execution_id": 123,
+  "messages": [
+    {
+      "turn_number": 1,
+      "role": "agent",
+      "content": "I will start by listing the files in the directory...",
+      "timestamp": "2024-03-21T10:00:00",
+      "thoughts": [
+        {
+          "step": "TerminalAction",
+          "summary": "List files in workspace",
+          "reasoning": "I should use the ls command to see what files are here.",
+          "timestamp": "2026-04-05T13:59:00.000000"
+        },
+        {
+          "step": "FinishAction",
+          "summary": "Found several python files",
+          "reasoning": "The directory contains several python files.",
+          "timestamp": "2026-04-05T14:00:00.000000"
+        }
+      ]
+    },
+    {
+      "turn_number": 2,
+      "role": "agent",
+      "content": "I found a bug in line 45. Should I fix it?",
+      "timestamp": "2024-03-21T10:05:00"
+    }
+  ]
+}
+```
+
+**cURL Example:**
+```bash
+curl -X GET http://localhost:8101/api/execute/123/messages \
+  -H "X-API-Key: your_secret_api_key_here"
+```

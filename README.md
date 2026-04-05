@@ -26,6 +26,11 @@ A FastHTML web application that allows users to input a prompt and specify a mod
 - Real-time log streaming via Server-Sent Events (SSE)
 - Execution history stored in SQLite database
 - HTMX-powered seamless UI updates
+- Conversation & Thinking Process Visualization
+- Real-time Agent Thinking Status
+- Historical Chain of Thought Storage
+- Step-by-step AI Reasoning Transparency
+- Deep Thought Chain Analysis
 
 ## Database
 

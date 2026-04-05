@@ -74,6 +74,8 @@ def init_db():
         c.execute("ALTER TABLE execution_turns ADD COLUMN cache_write_tokens INTEGER")
     if "latency" not in columns:
         c.execute("ALTER TABLE execution_turns ADD COLUMN latency REAL")
+    if "thoughts" not in columns:
+        c.execute("ALTER TABLE execution_turns ADD COLUMN thoughts TEXT")
 
     conn.commit()
     conn.close()
@@ -110,7 +112,7 @@ def add_execution_turn(exec_id, turn_number, prompt):
     return turn_id
 
 def update_turn_status(turn_id, status, logs=None, prompt_tokens=None, completion_tokens=None, total_tokens=None, cost=None,
-                       agent_message=None, reasoning_tokens=None, cache_read_tokens=None, cache_write_tokens=None, latency=None):
+                       agent_message=None, reasoning_tokens=None, cache_read_tokens=None, cache_write_tokens=None, latency=None, thoughts=None):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     update_fields = ["status = ?"]
@@ -122,6 +124,9 @@ def update_turn_status(turn_id, status, logs=None, prompt_tokens=None, completio
     if agent_message is not None:
         update_fields.append("agent_message = ?")
         params.append(agent_message)
+    if thoughts is not None:
+        update_fields.append("thoughts = ?")
+        params.append(json.dumps(thoughts))
     if prompt_tokens is not None:
         update_fields.append("prompt_tokens = ?")
         params.append(prompt_tokens)
@@ -190,13 +195,13 @@ def get_execution(exec_id):
     
     exec_data = {"id": row[0], "prompt": row[1], "model": row[2], "workspace": row[3], "status": row[4], "created_at": row[5]}
     
-    c.execute("SELECT turn_number, prompt, logs, status, prompt_tokens, completion_tokens, total_tokens, cost, created_at, agent_message FROM execution_turns WHERE execution_id = ? ORDER BY turn_number ASC", (exec_id,))
+    c.execute("SELECT turn_number, prompt, logs, status, prompt_tokens, completion_tokens, total_tokens, cost, created_at, agent_message, thoughts FROM execution_turns WHERE execution_id = ? ORDER BY turn_number ASC", (exec_id,))
     turns = c.fetchall()
     exec_data["turns"] = [
         {
             "turn_number": t[0], "prompt": t[1], "logs": t[2], "status": t[3],
             "prompt_tokens": t[4] or 0, "completion_tokens": t[5] or 0, "total_tokens": t[6] or 0, "cost": t[7] or 0.0, "created_at": t[8],
-            "agent_message": t[9]
+            "agent_message": t[9], "thoughts": t[10]
         } for t in turns
     ]
     
@@ -257,6 +262,7 @@ init_db()
 
 execution_queues = {} # For SSE output stream
 execution_inputs = {} # For input messages
+execution_thoughts = {} # For current thought
 
 class QueueWriter:
     def __init__(self, queue, loop):
@@ -497,6 +503,7 @@ def get_index(session):
                     Span("Execute", cls="normal-text"),
                     type="submit", hx_post="/execute", hx_target="#loading-indicator", hx_swap="none", cls="button-execute", disabled=True
                 ),
+                Span(id="live-thought-indicator", style="margin-left: 10px; font-style: italic; color: #666; vertical-align: middle;"),
                 A("Conversation", id="conversation-link", cls="conversation-link", href="#", 
                   hx_get="/conversation", hx_target="#modal-placeholder", 
                   hx_trigger="click",
@@ -534,7 +541,10 @@ def start_execution_thread(exec_id, prompt, model, workspace, mcp_config, loop, 
         sys.stdout = writer
         try:
             from engine.runner import TaskRunner
-            runner = TaskRunner(workspace=workspace, model=model, mcp_config=mcp_config)
+            def on_thought(thought_data):
+                execution_thoughts[exec_id] = thought_data
+                asyncio.run_coroutine_threadsafe(q.put({"event": "agent_thought", "data": thought_data}), loop)
+            runner = TaskRunner(workspace=workspace, model=model, mcp_config=mcp_config, on_thought=on_thought)
             success_init, _ = runner.start_session()
             if not success_init:
                 update_execution_status(exec_id, "error")
@@ -560,9 +570,13 @@ def start_execution_thread(exec_id, prompt, model, workspace, mcp_config, loop, 
                     cache_read_tokens=metrics.get("cache_read_tokens"),
                     cache_write_tokens=metrics.get("cache_write_tokens"),
                     latency=metrics.get("latency"),
-                    cost=metrics.get("cost")
+                    cost=metrics.get("cost"),
+                    thoughts=metrics.get("thoughts")
                 )
                 writer.clear_logs()
+
+                if metrics.get("agent_message"):
+                    asyncio.run_coroutine_threadsafe(q.put({"event": "agent_message", "data": {"content": metrics.get("agent_message")}}), loop)
 
                 update_execution_status(exec_id, "waiting_for_input")
                 sys.stdout.write("\n[System: Gõ lệnh tiếp theo]\n")
@@ -596,6 +610,8 @@ def start_execution_thread(exec_id, prompt, model, workspace, mcp_config, loop, 
                 del execution_queues[exec_id]
             if exec_id in execution_inputs:
                 del execution_inputs[exec_id]
+            if exec_id in execution_thoughts:
+                del execution_thoughts[exec_id]
 
     thread = threading.Thread(target=run_task_thread)
     thread.start()
@@ -635,17 +651,53 @@ async def post_execute(request):
     
     return Div(
         H4(f"Execution #{exec_id} started"),
-        Div(id=f"terminal-output-{exec_id}", cls="terminal"),
+        Div(id=f"conversation-flow-{exec_id}", cls="conversation-flow", style="margin-bottom: 1rem; max-height: 300px; overflow-y: auto; padding: 10px; background: #f9f9f9; border-radius: 8px;"),
+        Div(id=f"terminal-output-{exec_id}", cls="terminal", style="height: 300px;"),
         Script(f"""
             (function() {{
                 const term = document.getElementById('terminal-output-{exec_id}');
+                const convFlow = document.getElementById('conversation-flow-{exec_id}');
                 const btn = document.querySelector('.button-execute');
                 const promptArea = document.getElementById('prompt');
                 const taskForm = document.getElementById('task-form');
-                
+
                 if (btn) {{ btn.classList.add('is-loading'); btn.disabled = true; }}
-                
+
                 const source = new EventSource('/stream/{exec_id}');
+                
+                source.addEventListener('agent_thought', function(event) {{
+                    const data = JSON.parse(event.data);
+                    const indicator = document.getElementById('live-thought-indicator');
+                    if (indicator) {{
+                        indicator.textContent = '🤔 ' + data.summary + ': ' + data.step + '...';
+                    }}
+                }});
+
+                source.addEventListener('agent_message', function(event) {{
+                    const data = JSON.parse(event.data);
+                    const indicator = document.getElementById('live-thought-indicator');
+                    if (indicator) {{ indicator.textContent = ''; }}
+                    const msgDiv = document.createElement('div');
+                    msgDiv.className = 'agent-message';
+                    msgDiv.style.cssText = 'background: #e3f2fd; padding: 10px; border-radius: 8px; margin-bottom: 10px; border-left: 4px solid #2196f3;';
+
+                    const iconSpan = document.createElement('span');
+                    iconSpan.textContent = '🤖 Agent: ';
+                    iconSpan.style.fontWeight = 'bold';
+
+                    const contentDiv = document.createElement('div');
+                    if (typeof marked !== 'undefined') {{
+                        contentDiv.innerHTML = marked.parse(data.content);
+                    }} else {{
+                        contentDiv.textContent = data.content;
+                    }}
+
+                    msgDiv.appendChild(iconSpan);
+                    msgDiv.appendChild(contentDiv);
+                    convFlow.appendChild(msgDiv);
+                    convFlow.scrollTop = convFlow.scrollHeight;
+                }});
+
                 source.onmessage = function(event) {{
                     const data = event.data;
                     term.textContent += data + '\\n';
@@ -720,6 +772,10 @@ async def get_stream(exec_id: int):
             if line is None:
                 await asyncio.sleep(0.1)
                 break
+            if isinstance(line, dict):
+                import json
+                yield f"event: {line['event']}\ndata: {json.dumps(line['data'])}\n\n"
+                continue
             lines = line.splitlines(keepends=True)
             for l in lines:
                 data_content = l.rstrip('\n').rstrip('\r')
@@ -732,7 +788,7 @@ def get_execution_turns(exec_id):
     c = conn.cursor()
     c.execute("""
         SELECT turn_number, prompt, logs, status, prompt_tokens, completion_tokens, total_tokens, cost, created_at,
-               agent_message, reasoning_tokens, cache_read_tokens, cache_write_tokens, latency
+               agent_message, reasoning_tokens, cache_read_tokens, cache_write_tokens, latency, thoughts
         FROM execution_turns 
         WHERE execution_id = ? 
         ORDER BY created_at DESC
@@ -743,7 +799,7 @@ def get_execution_turns(exec_id):
         {
             "turn_number": t[0], "prompt": t[1], "logs": t[2], "status": t[3],
             "prompt_tokens": t[4] or 0, "completion_tokens": t[5] or 0, "total_tokens": t[6] or 0, "cost": t[7] or 0.0, "created_at": t[8],
-            "agent_message": t[9], "reasoning_tokens": t[10] or 0, "cache_read_tokens": t[11] or 0, "cache_write_tokens": t[12] or 0, "latency": t[13] or 0.0
+            "agent_message": t[9], "reasoning_tokens": t[10] or 0, "cache_read_tokens": t[11] or 0, "cache_write_tokens": t[12] or 0, "latency": t[13] or 0.0, "thoughts": t[14]
         } for t in turns
     ]
 
@@ -762,6 +818,33 @@ def get_conversation(exec_id: int):
             Span(f"Status: {t['status']}", cls=f"metric-badge status-{t['status']}")
         ]
         
+        thoughts_elements = []
+        if t.get("thoughts"):
+            try:
+                thoughts_data = json.loads(t["thoughts"])
+                if isinstance(thoughts_data, list):
+                    for idx, step in enumerate(thoughts_data):
+                        thoughts_elements.append(Div(
+                            Div(
+                                Strong(f"Step {idx+1}: {step.get('step', 'Action')}"),
+                                Span(f" ({step.get('timestamp', '')})", style="color: #999; font-size: 0.8em;"),
+                                style="margin-bottom: 0.2rem;"
+                            ),
+                            Div(Em(step.get('summary', '')), style="color: #555; margin-bottom: 0.3rem;"),
+                            Details(
+                                Summary("View Reasoning Details", style="font-size: 0.85em; color: #007acc; cursor: pointer;"),
+                                Pre(step.get('reasoning', ''), style="white-space: pre-wrap; background: #fff; padding: 5px; border: 1px solid #ddd; margin-top: 5px; font-size: 0.9em;"),
+                                style="margin-left: 10px;"
+                            ),
+                            style="border-bottom: 1px solid #eee; padding: 10px; margin-bottom: 10px; background: #fff; border-radius: 4px;"
+                        ))
+                else:
+                    thoughts_elements.append(Pre(str(thoughts_data)))
+            except Exception as e:
+                thoughts_elements.append(Pre(f"Error parsing thoughts: {e}"))
+        else:
+            thoughts_elements.append(P("No thoughts recorded"))
+        
         turn_elements.append(Div(
             Div(
                 H4(f"Turn {t['turn_number']}", style="margin:0;"),
@@ -772,7 +855,12 @@ def get_conversation(exec_id: int):
             Pre(t["prompt"], style="white-space: pre-wrap; background: #f0f0f0; padding: 10px; border-radius: 4px;"),
             Div(t["agent_message"] or "No message", cls="markdown-content"),
             Details(
-                Summary("📜 View Logs", style="color: #007acc; text-decoration: underline;"),
+                Summary("🧠 View Chain of Thought", style="color: #007acc; text-decoration: underline; margin-top: 0.5rem;"),
+                Div(*thoughts_elements, style="background: #f1f1f1; padding: 10px; border: 1px solid #eee; max-height: 400px; overflow-y: auto;"),
+                cls="thought-accordion"
+            ),
+            Details(
+                Summary("📜 View Logs", style="color: #007acc; text-decoration: underline; margin-top: 0.5rem;"),
                 Pre(t["logs"] or "No logs", cls="terminal", style="max-height: 250px; overflow-y: auto;"),
                 cls="log-accordion"
             ),
@@ -811,12 +899,39 @@ def get_execution_detail(exec_id: int):
             prompt_history.append(Div(P(Strong(f"Turn {t['turn_number']}:")), Pre(t["prompt"], style="white-space: pre-wrap; background: #f9f9f9; padding: 10px; border: 1px solid #eee;")))
     
     # Render all logs from all turns
+    # Render all logs from all turns
     all_logs = []
+    conversation_history = []
     for t in exec_data["turns"]:
         all_logs.append(f"> User [Turn {t['turn_number']}]: {t['prompt']}")
         all_logs.append(t['logs'] or "No logs available")
+        if t.get("thoughts"):
+            import json
+            try:
+                thoughts_list = json.loads(t["thoughts"])
+                if isinstance(thoughts_list, list):
+                    for thought_obj in thoughts_list:
+                        summary = thought_obj.get('summary', '') if isinstance(thought_obj, dict) else str(thought_obj)
+                        conversation_history.append(
+                            Div(
+                                Span("🧠 Thinking: ", style="font-weight: bold; color: #007bff;"),
+                                Span(summary, style="font-style: italic;"),
+                                style="background: #f8f9fa; padding: 8px; border-radius: 8px; margin-bottom: 5px; border-left: 4px solid #007bff; font-size: 0.9em;"
+                            )
+                        )
+            except:
+                pass
+        if t.get("agent_message"):
+            conversation_history.append(
+                Div(
+                    Span("🤖 Agent: ", style="font-weight: bold;"),
+                    Div(t["agent_message"], cls="markdown-content"),
+                    cls="agent-message",
+                    style="background: #e3f2fd; padding: 10px; border-radius: 8px; margin-bottom: 10px; border-left: 4px solid #2196f3;"
+                )
+            )
     full_log_text = "\n\n".join(all_logs)
-    
+
     if exec_data["status"] in ["running", "waiting_for_input"]:
         # Tái hiện màn hình Live Terminal nếu phiên làm việc vẫn còn Active
         is_waiting = (exec_data["status"] == "waiting_for_input")
@@ -829,14 +944,41 @@ def get_execution_detail(exec_id: int):
                 Div(
                     P(Strong("Prompt History:")),
                     Div(*prompt_history, style="max-height: 200px; overflow-y: auto; margin-bottom: 20px; border: 1px solid #ccc; padding: 10px;"),
+                    P(Strong("Conversation Flow:")),
+                    Div(*conversation_history, id=f"conversation-flow-{exec_id}", cls="conversation-flow", style="margin-bottom: 1rem; max-height: 200px; overflow-y: auto; padding: 10px; background: #f9f9f9; border-radius: 8px;"),
                     P(Strong("Live Logs:")),
                     Div(full_log_text, id=f"terminal-output-{exec_id}", cls="terminal", style="white-space: pre-wrap; height: 300px;"),
                 ),
                 Script(f"""
                     (function() {{
                         const term = document.getElementById('terminal-output-{exec_id}');
+                        const convFlow = document.getElementById('conversation-flow-{exec_id}');
                         term.scrollTop = term.scrollHeight;
                         const source = new EventSource('/stream/{exec_id}');
+                        
+                        source.addEventListener('agent_message', function(event) {{
+                            const data = JSON.parse(event.data);
+                            const msgDiv = document.createElement('div');
+                            msgDiv.className = 'agent-message';
+                            msgDiv.style.cssText = 'background: #e3f2fd; padding: 10px; border-radius: 8px; margin-bottom: 10px; border-left: 4px solid #2196f3;';
+                            
+                            const iconSpan = document.createElement('span');
+                            iconSpan.textContent = '🤖 Agent: ';
+                            iconSpan.style.fontWeight = 'bold';
+                            
+                            const contentDiv = document.createElement('div');
+                            if (typeof marked !== 'undefined') {{
+                                contentDiv.innerHTML = marked.parse(data.content);
+                            }} else {{
+                                contentDiv.textContent = data.content;
+                            }}
+                            
+                            msgDiv.appendChild(iconSpan);
+                            msgDiv.appendChild(contentDiv);
+                            convFlow.appendChild(msgDiv);
+                            convFlow.scrollTop = convFlow.scrollHeight;
+                        }});
+
                         source.onmessage = function(event) {{
                             const data = event.data;
                             term.textContent += data + '\\n';
@@ -944,17 +1086,51 @@ def api_execute_status(exec_id: int):
     exec_data = get_execution(exec_id)
     if not exec_data:
         return JSONResponse({"error": "Execution not found"}, status_code=404)
-    
+
     last_turn = exec_data["turns"][-1] if exec_data["turns"] else None
-    
-    return JSONResponse({
+    total_tokens = sum(t.get("total_tokens", 0) for t in exec_data["turns"])
+    total_cost = sum(t.get("cost", 0.0) for t in exec_data["turns"])
+
+    response_data = {
         "status": exec_data["status"],
         "last_agent_message": last_turn["agent_message"] if last_turn else None,
         "current_turn": last_turn["turn_number"] if last_turn else 0,
         "metrics": {
-            "total_tokens": exec_data.get("total_tokens", 0),
-            "cost": exec_data.get("cost", 0.0)
+            "total_tokens": total_tokens,
+            "cost": total_cost
         }
+    }
+    if exec_data["status"] == "running" and exec_id in execution_thoughts:
+        response_data["current_thought"] = execution_thoughts[exec_id]
+
+    return JSONResponse(response_data)
+
+@app.get("/api/execute/{exec_id}/messages")
+def api_execute_messages(exec_id: int):
+    exec_data = get_execution(exec_id)
+    if not exec_data:
+        return JSONResponse({"error": "Execution not found"}, status_code=404)
+
+    import json
+    messages = []
+    for t in exec_data["turns"]:
+        if t.get("agent_message"):
+            msg = {
+                "turn_number": t["turn_number"],
+                "role": "agent",
+                "content": t["agent_message"],
+                "timestamp": t["created_at"]
+            }
+            if t.get("thoughts"):
+                try:
+                    msg["thoughts"] = json.loads(t["thoughts"])
+                except:
+                    msg["thoughts"] = []
+            messages.append(msg)
+
+    return JSONResponse({
+        "execution_id": exec_id,
+        "messages": messages
     })
 
 @app.post("/api/execute/{exec_id}/stop")

@@ -1,6 +1,7 @@
 from typing import List, Optional, Dict, Any
 import os
 import traceback
+from datetime import datetime
 from openhands.sdk import LLM, Agent, Conversation, Tool
 from openhands.sdk.event import Event, MessageEvent, ActionEvent, ObservationEvent
 from openhands.tools.terminal import TerminalTool
@@ -21,7 +22,8 @@ class TaskRunner:
         tools: Optional[List[Tool]] = None,
         agent_name: str = "OpenHands-Agent",
         mcp_config: Optional[Dict[str, Any]] = None,
-        system_prompt: Optional[str] = None
+        system_prompt: Optional[str] = None,
+        on_thought: Optional[callable] = None
     ):
         """
         Initialize the TaskRunner.
@@ -91,7 +93,35 @@ class TaskRunner:
 
     def _on_event(self, event: Event):
         try:
-            if isinstance(event, MessageEvent):
+            if isinstance(event, ActionEvent):
+                action = getattr(event, 'action', None)
+                if action:
+                    thought = getattr(action, 'thought', None)
+                    action_name = type(action).__name__
+                    
+                    # Intercept action details
+                    summary = getattr(action, 'summary', None)
+                    if not summary and thought:
+                        summary = thought.split('\n')[0][:100] # First line of thought
+                    if not summary:
+                        summary = f"Executing {action_name}"
+
+                    thought_data = {
+                        "step": action_name,
+                        "summary": summary,
+                        "reasoning": thought or "",
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    
+                    self._current_turn_thoughts.append(thought_data)
+                    if self.on_thought:
+                        self.on_thought(thought_data)
+
+                    if action_name == 'FinishAction':
+                        msg = getattr(action, 'message', '')
+                        if msg:
+                            self._agent_messages.append(msg)
+            elif isinstance(event, MessageEvent):
                 if getattr(event, 'source', '') == 'agent':
                     llm_msg = getattr(event, 'llm_message', None)
                     if llm_msg and getattr(llm_msg, 'role', '') == 'assistant':
@@ -103,12 +133,7 @@ class TaskRunner:
                         ]
                         if text_parts:
                             self._agent_messages.append("".join(text_parts))
-            elif isinstance(event, ActionEvent):
-                action = getattr(event, 'action', None)
-                if action and type(action).__name__ == 'FinishAction':
-                    msg = getattr(action, 'message', '')
-                    if msg:
-                        self._agent_messages.append(msg)
+
         except Exception:
             pass
 
@@ -121,6 +146,7 @@ class TaskRunner:
 
         try:
             num_before = len(self._agent_messages)
+            self._current_turn_thoughts = []
             self.conversation.send_message(task_prompt)
             print("--- Đang thực thi ---")
             self.conversation.run()
@@ -139,7 +165,8 @@ class TaskRunner:
                     "cache_read_tokens": tu.cache_read_tokens or 0,
                     "cache_write_tokens": tu.cache_write_tokens or 0,
                     "latency": m.response_latencies[-1].latency if m.response_latencies else 0.0,
-                    "agent_message": new_messages[-1] if new_messages else ""
+                    "agent_message": new_messages[-1] if new_messages else "",
+                    "thoughts": self._current_turn_thoughts.copy()
                 }
             print(f"\n✅ {success_message}")
             return True, metrics
