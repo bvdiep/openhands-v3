@@ -59,6 +59,9 @@ class ThreadSafeStdout:
     def encoding(self):
         return getattr(sys.__stdout__, 'encoding', 'utf-8')
 
+    def isatty(self):
+        return False
+
 
 def install_thread_safe_stdout():
     """Install once at app startup."""

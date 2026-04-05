@@ -10,6 +10,7 @@ This repository contains the `openhands-v3` project — a task execution platfor
   - `db/queries.py`: All SQLite functions (`init_db`, `add_execution`, `update_execution_status`, `add_execution_turn`, `update_turn_status`, `get_executions`, `get_execution`, `get_execution_turns`). Uses `get_db()` context manager.
 - `services/`: Business logic (extracted from main.py).
   - `services/execution.py`: Thread-safe execution state (`execution_queues`, `execution_inputs`, `execution_thoughts`, `turn_thoughts`), `ThreadSafeStdout`, `QueueWriter`, `start_execution_thread`.
+  - `services/skills.py`: Skills loading and caching — `get_public_skills()`, `get_project_skills()`, `get_all_skills()`, `skill_to_dict()`. Caches loaded skills in memory.
 - `plans/`: Architecture and improvement plans.
 - `requirements.txt`: Project dependencies.
 - `ecosystem.config.json`: PM2 configuration file.
@@ -19,3 +20,5 @@ This repository contains the `openhands-v3` project — a task execution platfor
 - Database functions use `with get_db() as conn:` context manager pattern (in `db/queries.py`).
 - Execution threads use thread-local stdout via `ThreadSafeStdout` + `set_thread_writer`/`clear_thread_writer` (in `services/execution.py`).
 - Global execution state is protected by `threading.Lock` (`_lock` in `services/execution.py`).
+- Skills are loaded via `AgentContext(load_public_skills=True, load_user_skills=True)` and passed to `Agent` in `engine/runner.py`. Public skills (37) come from the OpenHands extensions repo, project skills come from `AGENTS.md`.
+- SDK trigger types: `KeywordTrigger` has `.keywords`, `TaskTrigger` has `.triggers` — use `getattr()` for safe access.

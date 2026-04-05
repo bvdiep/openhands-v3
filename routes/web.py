@@ -17,6 +17,7 @@ from services.execution import (
     register_execution,
     start_execution_thread,
 )
+from services.skills import get_all_skills, skill_to_dict
 
 
 # ---------------------------------------------------------------------------
@@ -274,13 +275,21 @@ def register(app, rt):  # noqa: C901  (complex but faithful port)
                         type="submit", hx_post="/execute", hx_target="#loading-indicator", hx_swap="none",
                         cls="button-execute", disabled=True,
                     ),
-                    A(
-                        "Conversation", id="conversation-link", cls="conversation-link", href="#",
-                        hx_get="/conversation", hx_target="#modal-placeholder", hx_trigger="click",
-                        onclick="const execId = document.getElementById('task-form').dataset.activeExecId; if(!execId) { alert('No active execution'); return false; } this.setAttribute('hx-get', '/conversation/' + execId); htmx.process(this);",
-                        style="display:none",
+                    Div(
+                        A(
+                            "🧩 Skills", href="#",
+                            hx_get="/skills", hx_target="#modal-placeholder", hx_trigger="click",
+                            cls="skills-link",
+                        ),
+                        A(
+                            "Conversation", id="conversation-link", cls="conversation-link", href="#",
+                            hx_get="/conversation", hx_target="#modal-placeholder", hx_trigger="click",
+                            onclick="const execId = document.getElementById('task-form').dataset.activeExecId; if(!execId) { alert('No active execution'); return false; } this.setAttribute('hx-get', '/conversation/' + execId); htmx.process(this);",
+                            style="display:none",
+                        ),
+                        Span(id="live-thought-indicator", style="font-style: italic; color: #666; vertical-align: middle;"),
+                        cls="form-actions-row",
                     ),
-                    Span(id="live-thought-indicator", style="margin-left: 10px; font-style: italic; color: #666; vertical-align: middle;"),
                     id="task-form",
                     hx_on__after_request="""
                         if(event.detail.successful) {
@@ -304,6 +313,43 @@ def register(app, rt):  # noqa: C901  (complex but faithful port)
     @rt("/history")
     def get_history(page: int = 1):
         return _render_history(page)
+
+    @rt("/skills")
+    def get_skills():
+        skills = get_all_skills()
+        skill_items = []
+        for s in skills:
+            if s.trigger is None:
+                trigger_badge = Span("Always active", cls="skill-badge skill-badge-always")
+            else:
+                words = getattr(s.trigger, "keywords", None) or getattr(s.trigger, "triggers", [])
+                label = ", ".join(words[:3]) + ("…" if len(words) > 3 else "")
+                trigger_badge = Span(f"Keyword: {label}", cls="skill-badge skill-badge-keyword")
+            skill_items.append(
+                Div(
+                    Div(
+                        Strong(s.name),
+                        trigger_badge,
+                        cls="skill-item-header",
+                    ),
+                    P(s.description or "No description", cls="skill-item-desc"),
+                    cls="skill-item",
+                )
+            )
+
+        return Dialog(
+            Article(
+                Header(
+                    Button(aria_label="Close", cls="close", onclick="this.closest('dialog').removeAttribute('open')"),
+                    P(Strong(f"🧩 Skills ({len(skills)})")),
+                ),
+                Div(*skill_items, cls="skills-list"),
+                Footer(
+                    Button("Close", onclick="this.closest('dialog').removeAttribute('open')", cls="outline"),
+                ),
+            ),
+            open=True, id="skills-modal",
+        )
 
     @rt("/execute")
     async def post_execute(request):

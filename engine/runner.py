@@ -2,13 +2,12 @@ from typing import List, Optional, Dict, Any
 import os
 import traceback
 from datetime import datetime
-from openhands.sdk import LLM, Agent, Conversation, Tool
+from openhands.sdk import LLM, Agent, AgentContext, Conversation, Tool
 from openhands.sdk.event import Event, MessageEvent, ActionEvent, ObservationEvent
 from openhands.tools.terminal import TerminalTool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.browser_use import BrowserToolSet
 
-# Integration with existing config
 from .config import LLM_CONFIG
 
 class TaskRunner:
@@ -57,11 +56,18 @@ class TaskRunner:
             temperature=self.temperature,
         )
         
+        # Setup AgentContext with skills
+        self.agent_context = AgentContext(
+            load_public_skills=True,
+            load_user_skills=True,
+        )
+
         # Setup Agent
         agent_kwargs = {
             "llm": self.llm,
             "tools": self.tools,
-            "name": agent_name
+            "name": agent_name,
+            "agent_context": self.agent_context,
         }
         if mcp_config:
             agent_kwargs["mcp_config"] = mcp_config
