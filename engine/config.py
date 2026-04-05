@@ -96,28 +96,37 @@ QUY TẮC GHI NHẬT KÝ BẮT BUỘC:
 # Default LLM Configuration (shared across all projects)
 def get_api_key() -> str:
     """Get API key from environment with validation."""
-    api_key = os.getenv("LITELLM_KEY", "master-diep1234321")
+    api_key = os.getenv("LITELLM_KEY")
     if not api_key:
         raise ValueError(
             "LITELLM_KEY environment variable is not set. "
-            "Please set it before running the pipeline."
+            "Please set it in your .env file."
         )
     return api_key
 
-# Gọi litellm proxy
-# LLM_CONFIG: Dict[str, Any] = {
-#     "model": "openai/sonnet-4",
-#     "api_key": get_api_key(),  # Fails fast if not set
-#     "base_url": "http://localhost:4000/v1",
-#     "temperature": 0.0
-# }
-# Gọi Gemini trực tiếp
-LLM_CONFIG: Dict[str, Any] = {
-    "model": "gemini/gemini-3-flash-preview",
-    "api_key": os.getenv("GEMINI_API_KEY", "no-gemini-api-key"),  # Fails fast if not set
-    "base_url": None,
-    "temperature": 0.0
-}
+def _get_llm_config() -> Dict[str, Any]:
+    """Build LLM config from environment variables. Fails fast if required vars are missing."""
+    model = os.getenv("LLM_MODEL", "gemini/gemini-3-flash-preview")
+    base_url = os.getenv("LLM_BASE_URL")  # None = direct API call
+
+    if base_url:
+        api_key = get_api_key()
+    else:
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "GEMINI_API_KEY environment variable is not set. "
+                "Please set it in your .env file."
+            )
+
+    return {
+        "model": model,
+        "api_key": api_key,
+        "base_url": base_url,
+        "temperature": float(os.getenv("LLM_TEMPERATURE", "0.0")),
+    }
+
+LLM_CONFIG: Dict[str, Any] = _get_llm_config()
 
 
 # Global instance - will be set by each project
