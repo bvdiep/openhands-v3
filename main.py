@@ -263,6 +263,7 @@ init_db()
 execution_queues = {} # For SSE output stream
 execution_inputs = {} # For input messages
 execution_thoughts = {} # For current thought
+turn_thoughts = {} # For turn-level thought collection
 
 class QueueWriter:
     def __init__(self, queue, loop):
@@ -503,12 +504,12 @@ def get_index(session):
                     Span("Execute", cls="normal-text"),
                     type="submit", hx_post="/execute", hx_target="#loading-indicator", hx_swap="none", cls="button-execute", disabled=True
                 ),
-                Span(id="live-thought-indicator", style="margin-left: 10px; font-style: italic; color: #666; vertical-align: middle;"),
                 A("Conversation", id="conversation-link", cls="conversation-link", href="#", 
                   hx_get="/conversation", hx_target="#modal-placeholder", 
                   hx_trigger="click",
                   onclick="const execId = document.getElementById('task-form').dataset.activeExecId; if(!execId) { alert('No active execution'); return false; } this.setAttribute('hx-get', '/conversation/' + execId); htmx.process(this);",
                   style="display:none"),
+                Span(id="live-thought-indicator", style="margin-left: 10px; font-style: italic; color: #666; vertical-align: middle;"),
                 id="task-form",
                 hx_on__after_request="""
                     if(event.detail.successful) { 
@@ -541,9 +542,21 @@ def start_execution_thread(exec_id, prompt, model, workspace, mcp_config, loop, 
         sys.stdout = writer
         try:
             from engine.runner import TaskRunner
+            active_turn_id = None
             def on_thought(thought_data):
+                # Update memory
+                if exec_id not in turn_thoughts:
+                    turn_thoughts[exec_id] = []
+                turn_thoughts[exec_id].append(thought_data)
+                
                 execution_thoughts[exec_id] = thought_data
+                
+                # Update database in real-time
+                if active_turn_id:
+                    update_turn_status(active_turn_id, "running", thoughts=turn_thoughts[exec_id])
+                
                 asyncio.run_coroutine_threadsafe(q.put({"event": "agent_thought", "data": thought_data}), loop)
+            
             runner = TaskRunner(workspace=workspace, model=model, mcp_config=mcp_config, on_thought=on_thought)
             success_init, _ = runner.start_session()
             if not success_init:
@@ -554,7 +567,9 @@ def start_execution_thread(exec_id, prompt, model, workspace, mcp_config, loop, 
             current_prompt = prompt
 
             while True:
-                turn_id = add_execution_turn(exec_id, turn_number, current_prompt)
+                active_turn_id = add_execution_turn(exec_id, turn_number, current_prompt)
+                turn_id = active_turn_id # For use in other places if needed
+                turn_thoughts[exec_id] = [] # Reset for this turn
 
                 sys.stdout.write(f"\n> User: {current_prompt}\n")
                 success, metrics = runner.send_task(current_prompt)

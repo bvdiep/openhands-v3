@@ -69,6 +69,10 @@ class TaskRunner:
             agent_kwargs["system_prompt"] = system_prompt
             
         self.agent = Agent(**agent_kwargs)
+        self.on_thought = on_thought
+        self._agent_messages = []
+        self._current_turn_thoughts = []
+        self._pending_thought = "" # To capture thoughts from MessageEvent
         
         # Ensure workspace exists
         os.makedirs(self.workspace, exist_ok=True)
@@ -91,48 +95,111 @@ class TaskRunner:
             traceback.print_exc()
             return False, metrics
 
+    def _extract_thought_metadata(self, obj: Any) -> tuple[str, str]:
+        """Trích xuất (reasoning, summary) từ một đối tượng bất kỳ của SDK một cách an toàn."""
+        # 1. Tìm reasoning/thought
+        reasoning = (getattr(obj, 'reasoning_content', None) or 
+                     getattr(obj, 'thought', None))
+        
+        # Xử lý nếu thought là danh sách (Sequence[TextContent] hoặc raw list)
+        if isinstance(reasoning, (list, tuple)):
+            reasoning = "\n".join([t.text if hasattr(t, 'text') else str(t) for t in reasoning])
+        elif hasattr(reasoning, 'text'):
+            reasoning = reasoning.text
+            
+        # Dữ liệu thô dự phòng từ __dict__ hoặc metadata
+        if not reasoning:
+            if hasattr(obj, 'metadata') and isinstance(obj.metadata, dict):
+                reasoning = obj.metadata.get('thought') or obj.metadata.get('reasoning')
+            if not reasoning and hasattr(obj, '__dict__'):
+                reasoning = obj.__dict__.get('reasoning') or obj.__dict__.get('thought')
+
+        # 2. Tìm hoặc tự tạo summary
+        summary = getattr(obj, 'summary', None)
+        if not summary and reasoning:
+            # Lấy dòng đầu tiên sạch (không Markdown) làm summary
+            first_line = str(reasoning).strip().split('\n')[0].replace('#', '').strip()
+            summary = first_line[:100]
+            
+        return str(reasoning or ""), str(summary or "")
+
     def _on_event(self, event: Event):
         try:
+            reasoning, summary = "", ""
+            step_name = "Thought"
+
             if isinstance(event, ActionEvent):
                 action = getattr(event, 'action', None)
-                if action:
-                    thought = getattr(action, 'thought', None)
-                    action_name = type(action).__name__
-                    
-                    # Intercept action details
-                    summary = getattr(action, 'summary', None)
-                    if not summary and thought:
-                        summary = thought.split('\n')[0][:100] # First line of thought
+                if not action:
+                    return
+                
+                step_name = type(action).__name__
+                # Thử trích xuất từ action (chứa thought cụ thể cho action đó)
+                reasoning, summary = self._extract_thought_metadata(action)
+                # Nếu action không có, thử trích xuất từ event bọc nó
+                if not reasoning:
+                    reasoning, summary = self._extract_thought_metadata(event)
+                
+                # Cơ chế dự phòng: dùng pending thought từ tin nhắn trước đó
+                if not reasoning and self._pending_thought:
+                    reasoning = self._pending_thought
                     if not summary:
-                        summary = f"Executing {action_name}"
+                        summary = reasoning.strip().split('\n')[0].replace('#', '').strip()[:100]
+                
+                # Reset pending thought sau khi đã gắn vào một Action
+                self._pending_thought = ""
 
-                    thought_data = {
-                        "step": action_name,
-                        "summary": summary,
-                        "reasoning": thought or "",
-                        "timestamp": datetime.now().isoformat()
-                    }
-                    
-                    self._current_turn_thoughts.append(thought_data)
-                    if self.on_thought:
-                        self.on_thought(thought_data)
+                # Ghi nhận agent message nếu là FinishAction
+                if step_name == 'FinishAction':
+                    msg = getattr(action, 'message', '')
+                    if msg: self._agent_messages.append(msg)
 
-                    if action_name == 'FinishAction':
-                        msg = getattr(action, 'message', '')
-                        if msg:
-                            self._agent_messages.append(msg)
             elif isinstance(event, MessageEvent):
-                if getattr(event, 'source', '') == 'agent':
-                    llm_msg = getattr(event, 'llm_message', None)
-                    if llm_msg and getattr(llm_msg, 'role', '') == 'assistant':
-                        msg_content = getattr(llm_msg, 'content', [])
-                        text_parts = [
-                            getattr(part, 'text', '')
-                            for part in msg_content
-                            if getattr(part, 'type', '') == 'text'
-                        ]
+                if getattr(event, 'source', '') in ['agent', 'model']:
+                    # SDK có thể để thông tin trong chính event hoặc llm_message
+                    llm_msg = event if hasattr(event, 'role') else getattr(event, 'llm_message', None)
+                    if not llm_msg: return
+
+                    step_name = "Deep Reasoning" if getattr(llm_msg, 'role', '') == 'thought' else "Model Thought"
+                    
+                    # 1. Trích xuất reasoning trực tiếp
+                    reasoning, summary = self._extract_thought_metadata(llm_msg)
+                    
+                    # 2. Duyệt qua các blocks nội dung (cho MessageEvent phức hợp)
+                    msg_content = getattr(llm_msg, 'content', [])
+                    if isinstance(msg_content, list):
+                        content_thoughts = []
+                        text_parts = []
+                        for part in msg_content:
+                            p_type = getattr(part, 'type', '')
+                            if p_type == 'thought':
+                                content_thoughts.append(getattr(part, 'thought', ''))
+                            elif p_type == 'text':
+                                text_parts.append(getattr(part, 'text', ''))
+                        
+                        if content_thoughts:
+                            reasoning = (reasoning + "\n" + "\n".join(content_thoughts)).strip()
+                        
                         if text_parts:
-                            self._agent_messages.append("".join(text_parts))
+                            combined_text = "".join(text_parts)
+                            self._agent_messages.append(combined_text)
+                            # Lưu text làm pending thought cho action tiếp theo nếu action đó thiếu reasoning
+                            self._pending_thought = combined_text
+                    elif isinstance(msg_content, str) and msg_content:
+                        self._agent_messages.append(msg_content)
+                        self._pending_thought = msg_content
+
+            # Nếu tìm thấy bất kỳ reasoning nào, lưu vào thoughts của turn hiện tại
+            if reasoning:
+                thought_data = {
+                    "step": step_name,
+                    "summary": summary or f"Executing {step_name}",
+                    "reasoning": reasoning,
+                    "timestamp": datetime.now().isoformat()
+                }
+                self._current_turn_thoughts.append(thought_data)
+                if self.on_thought:
+                    self.on_thought(thought_data)
 
         except Exception:
             pass
@@ -147,6 +214,7 @@ class TaskRunner:
         try:
             num_before = len(self._agent_messages)
             self._current_turn_thoughts = []
+            self._pending_thought = ""
             self.conversation.send_message(task_prompt)
             print("--- Đang thực thi ---")
             self.conversation.run()
