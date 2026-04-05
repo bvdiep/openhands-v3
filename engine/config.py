@@ -157,12 +157,8 @@ def get_project_config() -> ProjectConfig:
 
 
 # --- Dynamic MCP Configuration ---
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 ALLOWED_USER_IDS_STR = os.getenv("ALLOWED_USER_IDS", "[]")
-try:
-    ALLOWED_USER_IDS = json.loads(ALLOWED_USER_IDS_STR)
-except json.JSONDecodeError:
-    ALLOWED_USER_IDS = []
 
 # List of all available MCP servers that the user can choose from
 AVAILABLE_MCP_SERVERS: Dict[str, Dict[str, Any]] = {
@@ -175,10 +171,10 @@ AVAILABLE_MCP_SERVERS: Dict[str, Dict[str, Any]] = {
             "args": [
                 "/home/dd/work/diep/mcp-servers/mcp_telegram_oh/server.py"
             ],
-            "env": {
-                "TELEGRAM_BOT_TOKEN": TELEGRAM_BOT_TOKEN,
-                "ALLOWED_USER_IDS": ALLOWED_USER_IDS
-            }
+            # "env": {
+            #     "TELEGRAM_BOT_TOKEN": TELEGRAM_BOT_TOKEN,
+            #     "ALLOWED_USER_IDS": ALLOWED_USER_IDS_STR
+            # }
         }
     },
     "internet-search": {
@@ -188,10 +184,10 @@ AVAILABLE_MCP_SERVERS: Dict[str, Dict[str, Any]] = {
             "type": "stdio",
             "command": "/home/dd/work/diep/mcp-servers/mcp_internet_search/.venv/bin/python",
             "args": ["/home/dd/work/diep/mcp-servers/mcp_internet_search/server.py"],
-            "env": {
-                "SERPER_API_KEY": os.getenv("SERPER_API_KEY", ""),
-                "VOYAGE_API_KEY": os.getenv("VOYAGE_API_KEY", ""),
-            }
+            # "env": {
+            #     "SERPER_API_KEY": os.getenv("SERPER_API_KEY", ""),
+            #     "VOYAGE_API_KEY": os.getenv("VOYAGE_API_KEY", ""),
+            # }
         }
     }
 }
