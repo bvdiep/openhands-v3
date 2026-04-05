@@ -18,6 +18,9 @@ load_dotenv()
 LOGIN_USER = os.getenv("LOGIN_USER", "admin")
 LOGIN_PASS = os.getenv("LOGIN_PASS", "bsm4321")
 
+API_KEY = os.getenv("API_KEY")
+
+
 
 # Database setup
 DB_FILE = "executor.db"
@@ -187,12 +190,13 @@ def get_execution(exec_id):
     
     exec_data = {"id": row[0], "prompt": row[1], "model": row[2], "workspace": row[3], "status": row[4], "created_at": row[5]}
     
-    c.execute("SELECT turn_number, prompt, logs, status, prompt_tokens, completion_tokens, total_tokens, cost, created_at FROM execution_turns WHERE execution_id = ? ORDER BY turn_number ASC", (exec_id,))
+    c.execute("SELECT turn_number, prompt, logs, status, prompt_tokens, completion_tokens, total_tokens, cost, created_at, agent_message FROM execution_turns WHERE execution_id = ? ORDER BY turn_number ASC", (exec_id,))
     turns = c.fetchall()
     exec_data["turns"] = [
         {
             "turn_number": t[0], "prompt": t[1], "logs": t[2], "status": t[3],
-            "prompt_tokens": t[4] or 0, "completion_tokens": t[5] or 0, "total_tokens": t[6] or 0, "cost": t[7] or 0.0, "created_at": t[8]
+            "prompt_tokens": t[4] or 0, "completion_tokens": t[5] or 0, "total_tokens": t[6] or 0, "cost": t[7] or 0.0, "created_at": t[8],
+            "agent_message": t[9]
         } for t in turns
     ]
     
@@ -283,6 +287,15 @@ class QueueWriter:
 def auth_before(request, session):
     path = request.scope['path']
     if path in ['/login', '/favicon.ico', '/static']: return
+    
+    # API Authentication
+    if path.startswith('/api/'):
+        api_key = request.headers.get('X-API-Key') or request.headers.get('Authorization', '').replace('Bearer ', '')
+        if not API_KEY or api_key != API_KEY:
+            from starlette.responses import JSONResponse
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+        return
+        
     if 'auth' not in session: return RedirectResponse('/login', status_code=303)
 
 app, rt = fast_app(
@@ -513,6 +526,80 @@ def get_index(session):
 def get_history(page: int = 1):
     return render_history(page)
 
+
+def start_execution_thread(exec_id, prompt, model, workspace, mcp_config, loop, q, in_q):
+    def run_task_thread():
+        old_stdout = sys.stdout
+        writer = QueueWriter(q, loop)
+        sys.stdout = writer
+        try:
+            from engine.runner import TaskRunner
+            runner = TaskRunner(workspace=workspace, model=model, mcp_config=mcp_config)
+            success_init, _ = runner.start_session()
+            if not success_init:
+                update_execution_status(exec_id, "error")
+                return
+
+            turn_number = 1
+            current_prompt = prompt
+
+            while True:
+                turn_id = add_execution_turn(exec_id, turn_number, current_prompt)
+
+                sys.stdout.write(f"\n> User: {current_prompt}\n")
+                success, metrics = runner.send_task(current_prompt)
+
+                status = "success" if success else "error"
+                update_turn_status(
+                    turn_id, status, writer.get_logs(),
+                    agent_message=metrics.get("agent_message"),
+                    prompt_tokens=metrics.get("prompt_tokens"),
+                    completion_tokens=metrics.get("completion_tokens"),
+                    total_tokens=metrics.get("total_tokens"),
+                    reasoning_tokens=metrics.get("reasoning_tokens"),
+                    cache_read_tokens=metrics.get("cache_read_tokens"),
+                    cache_write_tokens=metrics.get("cache_write_tokens"),
+                    latency=metrics.get("latency"),
+                    cost=metrics.get("cost")
+                )
+                writer.clear_logs()
+
+                update_execution_status(exec_id, "waiting_for_input")
+                sys.stdout.write("\n[System: Gõ lệnh tiếp theo]\n")
+
+                try:
+                    msg = in_q.get(block=True, timeout=3600)
+                except queue.Empty:
+                    msg = "__STOP__"
+                    sys.stdout.write("\n[System: Timeout waiting for input]\n")
+
+                if msg == "__STOP__":
+                    update_execution_status(exec_id, "completed")
+                    sys.stdout.write("\n[System: Phiên làm việc đã kết thúc]\n")
+                    break
+
+                current_prompt = msg
+                turn_number += 1
+                update_execution_status(exec_id, "running")
+
+        except Exception as e:
+            sys.stdout.write(f"Error: {str(e)}\n")
+            import traceback
+            traceback.print_exc()
+            update_execution_status(exec_id, "error")
+        finally:
+            if 'runner' in locals() and hasattr(runner, 'close_session'):
+                runner.close_session()
+            sys.stdout = old_stdout
+            asyncio.run_coroutine_threadsafe(q.put(None), loop)
+            if exec_id in execution_queues:
+                del execution_queues[exec_id]
+            if exec_id in execution_inputs:
+                del execution_inputs[exec_id]
+
+    thread = threading.Thread(target=run_task_thread)
+    thread.start()
+
 @rt("/execute")
 async def post_execute(request):
     form = await request.form()
@@ -544,74 +631,7 @@ async def post_execute(request):
     execution_queues[exec_id] = q
     execution_inputs[exec_id] = in_q
     
-    def run_task_thread():
-        old_stdout = sys.stdout
-        writer = QueueWriter(q, loop)
-        sys.stdout = writer
-        try:
-            from engine.runner import TaskRunner
-            # Pass mcp_config to TaskRunner
-            runner = TaskRunner(workspace=workspace, model=model, mcp_config=mcp_config)
-            success_init, _ = runner.start_session()
-            if not success_init:
-                update_execution_status(exec_id, "error")
-                return
-
-            turn_number = 1
-            current_prompt = prompt
-
-            while True:
-                turn_id = add_execution_turn(exec_id, turn_number, current_prompt)
-                
-                sys.stdout.write(f"\n> User: {current_prompt}\n")
-                success, metrics = runner.send_task(current_prompt)
-                
-                status = "success" if success else "error"
-                update_turn_status(
-                    turn_id, status, writer.get_logs(),
-                    agent_message=metrics.get("agent_message"),
-                    prompt_tokens=metrics.get("prompt_tokens"),
-                    completion_tokens=metrics.get("completion_tokens"),
-                    total_tokens=metrics.get("total_tokens"),
-                    reasoning_tokens=metrics.get("reasoning_tokens"),
-                    cache_read_tokens=metrics.get("cache_read_tokens"),
-                    cache_write_tokens=metrics.get("cache_write_tokens"),
-                    latency=metrics.get("latency"),
-                    cost=metrics.get("cost")
-                )
-                writer.clear_logs()
-                
-                update_execution_status(exec_id, "waiting_for_input")
-                sys.stdout.write("\n[System: Gõ lệnh tiếp theo]\n")
-                
-                msg = in_q.get(block=True)
-                if msg == "__STOP__":
-                    update_execution_status(exec_id, "completed")
-                    sys.stdout.write("\n[System: Phiên làm việc đã kết thúc]\n")
-                    break
-                
-                current_prompt = msg
-                turn_number += 1
-                update_execution_status(exec_id, "running")
-                
-        except Exception as e:
-            sys.stdout.write(f"Error: {str(e)}\n")
-            import traceback
-            traceback.print_exc()
-            update_execution_status(exec_id, "error")
-        finally:
-            if 'runner' in locals() and hasattr(runner, 'close_session'):
-                runner.close_session()
-            sys.stdout = old_stdout
-            asyncio.run_coroutine_threadsafe(q.put(None), loop)
-            # Cleanup mappings
-            if exec_id in execution_queues:
-                del execution_queues[exec_id]
-            if exec_id in execution_inputs:
-                del execution_inputs[exec_id]
-    
-    thread = threading.Thread(target=run_task_thread)
-    thread.start()
+    start_execution_thread(exec_id, prompt, model, workspace, mcp_config, loop, q, in_q)
     
     return Div(
         H4(f"Execution #{exec_id} started"),
@@ -870,5 +890,79 @@ def post_login(username: str, password: str, session):
 def get_logout(session):
     session.pop('auth', None)
     return RedirectResponse("/login", status_code=303)
+
+
+from starlette.responses import JSONResponse
+
+@app.post("/api/execute")
+async def api_execute(request):
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+        
+    prompt = data.get("prompt", "").strip()
+    model = data.get("model", "").strip()
+    workspace = data.get("workspace", "").strip()
+    mcp_ids = data.get("mcp_ids", [])
+    
+    if not prompt or not model or not workspace:
+        return JSONResponse({"error": "Prompt, model, and workspace are required"}, status_code=400)
+        
+    mcp_config = get_mcp_config(mcp_ids)
+    exec_id = add_execution(prompt, model, workspace)
+    
+    loop = asyncio.get_running_loop()
+    q = asyncio.Queue()
+    in_q = queue.Queue()
+    execution_queues[exec_id] = q
+    execution_inputs[exec_id] = in_q
+    
+    start_execution_thread(exec_id, prompt, model, workspace, mcp_config, loop, q, in_q)
+    
+    return JSONResponse({"execution_id": exec_id, "status": "running"})
+
+@app.post("/api/execute/{exec_id}/message")
+async def api_execute_message(exec_id: int, request):
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+        
+    prompt = data.get("prompt", "").strip()
+    if not prompt:
+        return JSONResponse({"error": "Prompt is required"}, status_code=400)
+        
+    if exec_id in execution_inputs:
+        execution_inputs[exec_id].put(prompt)
+        return JSONResponse({"status": "message_sent"})
+    else:
+        return JSONResponse({"error": "Execution not found or not waiting for input"}, status_code=404)
+
+@app.get("/api/execute/{exec_id}/status")
+def api_execute_status(exec_id: int):
+    exec_data = get_execution(exec_id)
+    if not exec_data:
+        return JSONResponse({"error": "Execution not found"}, status_code=404)
+    
+    last_turn = exec_data["turns"][-1] if exec_data["turns"] else None
+    
+    return JSONResponse({
+        "status": exec_data["status"],
+        "last_agent_message": last_turn["agent_message"] if last_turn else None,
+        "current_turn": last_turn["turn_number"] if last_turn else 0,
+        "metrics": {
+            "total_tokens": exec_data.get("total_tokens", 0),
+            "cost": exec_data.get("cost", 0.0)
+        }
+    })
+
+@app.post("/api/execute/{exec_id}/stop")
+def api_execute_stop(exec_id: int):
+    if exec_id in execution_inputs:
+        execution_inputs[exec_id].put("__STOP__")
+        return JSONResponse({"status": "stop_signal_sent"})
+    else:
+        return JSONResponse({"error": "Execution not found or not active"}, status_code=404)
 
 serve()

@@ -47,3 +47,9 @@ Table: `executions`
 ## Deployment
 
 The application can be deployed using PM2 with the provided `ecosystem.config.json` file.
+
+## API Integration
+
+OpenHands-v3 exposes a secure RESTful API for third-party integrations. The API allows you to start tasks, send follow-up messages, check status, and stream logs.
+
+For detailed documentation and examples, please refer to [API_USAGE.md](API_USAGE.md).
