@@ -7,6 +7,7 @@ from openhands.sdk.event import Event, MessageEvent, ActionEvent, ObservationEve
 from openhands.tools.terminal import TerminalTool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.browser_use import BrowserToolSet
+from openhands.tools.task import TaskToolSet
 
 from .config import LLM_CONFIG
 
@@ -47,7 +48,8 @@ class TaskRunner:
         self.tools = tools if tools is not None else [
             Tool(name=TerminalTool.name),
             Tool(name=FileEditorTool.name),
-            Tool(name=BrowserToolSet.name)
+            Tool(name=BrowserToolSet.name),
+            Tool(name=TaskToolSet.name)
         ]
         
         # Initialize LLM using shared config
