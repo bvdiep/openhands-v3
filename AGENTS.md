@@ -22,3 +22,11 @@ This repository contains the `openhands-v3` project — a task execution platfor
 - Global execution state is protected by `threading.Lock` (`_lock` in `services/execution.py`).
 - Skills are loaded via `AgentContext(load_public_skills=True, load_user_skills=True)` and passed to `Agent` in `engine/runner.py`. Public skills (37) come from the OpenHands extensions repo, project skills come from `AGENTS.md`.
 - SDK trigger types: `KeywordTrigger` has `.keywords`, `TaskTrigger` has `.triggers` — use `getattr()` for safe access.
+
+## FPT Cloud AI Marketplace API
+- Inference API endpoint: `https://mkp-api.fptcloud.com/v1/chat/completions`
+- Standard OpenAI-compatible format (model, messages, max_tokens).
+- Vision supported: pass `{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}` in content array.
+- `marketplace.fptcloud.com` is the web UI (Cloudflare/Next.js), NOT the API host.
+- Python `urllib` is blocked by Cloudflare (error 1010); use `requests` library instead.
+- Docs: `https://ai-docs.fptcloud.com/fpt-ai-marketplace/fpt-ai-inference`

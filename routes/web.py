@@ -26,9 +26,14 @@ from services.skills import get_public_skills, get_user_skills, skill_trigger_la
 
 MODELS = [
     "gemini/gemini-3-flash-preview",
-    "gemini/gemini-3.1-pro-preview",
-    "openai/gpt-4o-mini",
-    "bedrock/us.anthropic.claude-opus-4-6-v1",
+    "gemini/gemma-4-31b-it",
+    "litellm/nvidia-minimax-m2.7",
+    "litellm/nvidia-glm-4.7",
+    "litellm/GLM-5",
+    "litellm/sonnet-4.5",
+    "litellm/fpt-ai-nemotron-3-super",
+    "litellm/nvidia-step-3.5-flash",
+    "litellm/nvidia-phi4-multimodal",
 ]
 
 

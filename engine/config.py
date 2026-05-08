@@ -92,41 +92,45 @@ QUY TẮC GHI NHẬT KÝ BẮT BUỘC:
    (colors, spacing, font-family) vào file '{self.style_guide_full_path}'.
 """
 
+LLM_TEMPERATURE=float(os.getenv("LLM_TEMPERATURE", "0.0"))
+DEFAULT_LLM_MODEL=os.getenv("DEFAULT_LLM_MODEL", "gemini/gemma-4-31b-it")
 
-# Default LLM Configuration (shared across all projects)
-def get_api_key() -> str:
-    """Get API key from environment with validation."""
-    api_key = os.getenv("LITELLM_KEY")
-    if not api_key:
-        raise ValueError(
-            "LITELLM_KEY environment variable is not set. "
-            "Please set it in your .env file."
-        )
-    return api_key
-
-def _get_llm_config() -> Dict[str, Any]:
-    """Build LLM config from environment variables. Fails fast if required vars are missing."""
-    model = os.getenv("LLM_MODEL", "gemini/gemini-3-flash-preview")
-    base_url = os.getenv("LLM_BASE_URL")  # None = direct API call
-
-    if base_url:
-        api_key = get_api_key()
-    else:
+def get_model_api_key_and_base_url(model: str) -> tuple[str, Optional[str], Optional[str]]:
+    """
+    Compute api_key and base_url based on model prefix.
+    
+    Args:
+        model: Model string in format "provider/model-name" (e.g., "litellm/gpt-4", "gemini/gemma-4").
+        
+    Returns:
+        tuple: (api_key, base_url)
+        
+    Raises:
+        ValueError: If model format is invalid or required env vars are missing.
+    """
+    if '/' not in model:
+        raise ValueError(f"Model '{model}' must include a provider prefix (e.g., 'litellm/model' or 'gemini/model')")
+    
+    prefix = model.split('/', 1)[0].lower()
+    model_without_prefix = model.split('/', 1)[1]
+    
+    if prefix == 'litellm':
+        base_url = os.getenv("LITELLM_BASE_URL")
+        api_key = os.getenv("LITELLM_KEY")
+        model = f"openai/{model_without_prefix}"
+        if not base_url:
+            raise ValueError("LITELLM_BASE_URL environment variable is required for litellm models")
+        if not api_key:
+            raise ValueError("LITELLM_KEY environment variable is required for litellm models")
+        return model, api_key, base_url
+    elif prefix == 'gemini':
+        base_url = None
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
-            raise ValueError(
-                "GEMINI_API_KEY environment variable is not set. "
-                "Please set it in your .env file."
-            )
-
-    return {
-        "model": model,
-        "api_key": api_key,
-        "base_url": base_url,
-        "temperature": float(os.getenv("LLM_TEMPERATURE", "0.0")),
-    }
-
-LLM_CONFIG: Dict[str, Any] = _get_llm_config()
+            raise ValueError("GEMINI_API_KEY environment variable is required for gemini models")
+        return model, api_key, base_url
+    else:
+        raise ValueError(f"Unsupported model prefix: '{prefix}'. Supported prefixes are 'litellm' and 'gemini'")
 
 
 # Global instance - will be set by each project
@@ -166,8 +170,8 @@ def get_project_config() -> ProjectConfig:
 
 
 # --- Dynamic MCP Configuration ---
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-ALLOWED_USER_IDS_STR = os.getenv("ALLOWED_USER_IDS", "[]")
+# TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+# ALLOWED_USER_IDS_STR = os.getenv("ALLOWED_USER_IDS", "[]")
 
 # List of all available MCP servers that the user can choose from
 AVAILABLE_MCP_SERVERS: Dict[str, Dict[str, Any]] = {

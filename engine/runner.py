@@ -1,3 +1,5 @@
+from engine.config import DEFAULT_LLM_MODEL
+from engine.config import LLM_TEMPERATURE
 from typing import List, Optional, Dict, Any
 import os
 import traceback
@@ -9,15 +11,13 @@ from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.browser_use import BrowserToolSet
 from openhands.tools.task import TaskToolSet
 
-from .config import LLM_CONFIG
+from .config import get_model_api_key_and_base_url
 
 class TaskRunner:
     def __init__(
         self,
         workspace: str,
         model: Optional[str] = None,
-        api_key: Optional[str] = None,
-        base_url: Optional[str] = None,
         temperature: Optional[float] = None,
         tools: Optional[List[Tool]] = None,
         agent_name: str = "OpenHands-Agent",
@@ -32,17 +32,25 @@ class TaskRunner:
         
         Args:
             workspace: Path to the workspace directory.
-            model: Optional model override (e.g., "openai/gpt-4").
+            model: Optional model override with provider prefix (e.g., "litellm/model-name" or "gemini/model-name"). Defaults to LLM_MODEL env var or "gemini/gemma-4-31b-it".
+            temperature: Optional temperature override.
             tools: Optional list of tools. Defaults to Terminal, FileEditor, and Browser.
             agent_name: Name of the agent.
             mcp_config: Optional MCP configuration.
             system_prompt: Optional system prompt for the agent.
+            on_thought: Optional callback for thought events.
+            load_public_skills: Whether to load public skills.
+            load_user_skills: Whether to load user skills.
         """
         self.workspace = os.path.abspath(os.path.expanduser(workspace))
-        self.model = model or LLM_CONFIG.get("model")
-        self.base_url = base_url or LLM_CONFIG.get("base_url")
-        self.api_key = api_key or LLM_CONFIG.get("api_key")
-        self.temperature = temperature if temperature is not None else LLM_CONFIG.get("temperature", 0.0)
+        get_model = model or DEFAULT_LLM_MODEL
+        # prefix = get_model.split('/', 1)[0].lower()
+        # if prefix != 'litellm':
+        #     self.model = get_model
+        # else:
+        #     self.model = get_model.split('/', 1)[1]
+        self.model, self.api_key, self.base_url = get_model_api_key_and_base_url(get_model)
+        self.temperature = temperature if temperature is not None else LLM_TEMPERATURE
         
         # Default tools if none provided
         self.tools = tools if tools is not None else [
