@@ -218,3 +218,21 @@ def get_execution_turns(exec_id):
             "agent_message": t[9], "reasoning_tokens": t[10] or 0, "cache_read_tokens": t[11] or 0, "cache_write_tokens": t[12] or 0, "latency": t[13] or 0.0, "thoughts": t[14]
         } for t in turns
     ]
+
+
+def get_running_executions_count():
+    """Count executions with status 'running' or 'waiting_for_input'."""
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute(
+            "SELECT COUNT(*) FROM executions WHERE status IN ('running', 'waiting_for_input')"
+        )
+        return c.fetchone()[0]
+
+
+def get_running_executions():
+    """Get list of execution IDs with status 'running' or 'waiting_for_input'."""
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("SELECT id FROM executions WHERE status IN ('running', 'waiting_for_input')")
+        return [row[0] for row in c.fetchall()]

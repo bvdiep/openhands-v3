@@ -439,3 +439,62 @@ details.log-accordion[open] summary {
     background: #e2e3f1;
     color: #383d6e;
 }
+
+/* Running executions counter */
+.running-counter {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    background: #f8f9fa;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    border: 1px solid #e9ecef;
+    transition: all 0.3s ease;
+    white-space: nowrap;
+}
+
+.status-indicator {
+    font-size: 1.2rem;
+    line-height: 1;
+    animation: pulse 2s infinite;
+}
+
+.status-running {
+    color: #2196f3;  /* Blue */
+}
+
+.status-idle {
+    color: #6c757d;  /* Gray - no pulse animation */
+    animation: none;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+.stop-all-link {
+    margin-left: 1rem;
+    font-size: 0.9rem;
+    color: #dc3545;
+    text-decoration: underline;
+    cursor: pointer;
+    background: none;
+    border: none;
+    padding: 0;
+    transition: color 0.15s;
+    white-space: nowrap;
+}
+
+.stop-all-link:hover {
+    color: #c82333;
+    text-decoration: none;
+}
+
+.success-message {
+    color: #28a745;
+    font-weight: bold;
+    margin-left: 0.5rem;
+    font-size: 0.9rem;
+}

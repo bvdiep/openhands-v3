@@ -10,6 +10,7 @@ from fasthtml.common import (
 
 from db.queries import (
     add_execution, get_executions, get_execution, get_execution_turns,
+    get_running_executions_count, get_running_executions,
 )
 from engine.config import AVAILABLE_MCP_SERVERS, get_mcp_config
 from services.execution import (
@@ -91,6 +92,40 @@ def _render_history(page=1):
         H3("Execution History"),
         Div(*cards, cls="history-cards"),
         Div(*pagination_controls, cls="pagination-container"),
+    )
+
+
+def _render_running_counter():
+    """Render the running executions counter with stop-all button."""
+    count = get_running_executions_count()
+    counter_content = []
+    if count == 0:
+        counter_content = [
+            Span("●", cls="status-indicator status-idle"),
+            Span(f" No active executions ", cls="status-text"),
+        ]
+    else:
+        counter_content = [
+            Span("●", cls="status-indicator status-running"),
+            Span(f" {count} execution{'s' if count > 1 else ''} running ", cls="status-text"),
+            A(
+                "Stop All",
+                href="#",
+                hx_post="/executions/stop-all",
+                hx_confirm="Stop all running executions?",
+                cls="stop-all-link",
+                onclick="return false;",
+            ),
+        ]
+    
+    return Div(
+        *counter_content,
+        cls="running-counter",
+        id="running-counter",
+        hx_get="/executions/running-count",
+        hx_trigger="every 5s",
+        hx_swap="outerHTML",
+        style="float: right",
     )
 
 
@@ -247,7 +282,8 @@ def register(app, rt):  # noqa: C901  (complex but faithful port)
         return Titled(
             "Task Runner",
             Div(
-                A("Logout", href="/logout", style="float: right"),
+                A("Logout", href="/logout", style="float: right; margin-left: 10px;"),
+                _render_running_counter(),
                 Form(
                     H3("Execute Task"),
                     Grid(
@@ -446,6 +482,21 @@ def register(app, rt):  # noqa: C901  (complex but faithful port)
         if in_q:
             in_q.put("__STOP__")
         return ""
+
+    @rt("/executions/stop-all")
+    def post_stop_all():
+        running_ids = get_running_executions()
+        stopped = 0
+        for exec_id in running_ids:
+            in_q = execution_inputs.get(exec_id)
+            if in_q:
+                in_q.put("__STOP__")
+                stopped += 1
+        return Div(f"✓ Stopped {stopped} execution{'s' if stopped != 1 else ''}", cls="success-message")
+
+    @rt("/executions/running-count")
+    def get_running_count():
+        return _render_running_counter()
 
     @rt("/conversation/{exec_id}")
     def get_conversation(exec_id: int):
